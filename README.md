@@ -9,14 +9,17 @@ The repo is scaffolded as a plain React Native app and already includes:
 - a vendored `sbagenxlib` snapshot in `native/sbagenxlib/`
 - an Android NDK/CMake build that compiles `libsbagenxbridge.so`
 - a Kotlin React Native module that calls into JNI
-- a first validation workbench screen for `.sbg` and `.sbgf` text
+- a first editor workbench screen for `.sbg` and `.sbgf` text
 - real `sbx_version()`, `sbx_api_version()`, `sbx_validate_sbg_text()`, and `sbx_validate_sbgf_text()` calls
+- a persistent native `SbxContext` for `.sbg` documents
+- preview rendering of PCM float samples from JNI without audio output
+- live Android playback for `.sbg` via `AudioTrack`
+- app-local draft save/load inside Android app storage
 
 What is not implemented yet:
 
-- live audio playback
-- document open/save flow
-- `.sbgf` curve inspection
+- system document picker / external file open-save flow
+- `.sbgf` curve inspection and beat preview
 - export workflows
 - iOS native bridge parity
 
@@ -69,8 +72,18 @@ cd android
 - `getBridgeInfo()`
 - `validateSbg(text, sourceName)`
 - `validateSbgf(text, sourceName)`
+- `prepareSbgContext(text, sourceName)`
+- `getContextState()`
+- `renderPreview(frameCount, sampleValueCount)`
+- `resetContext()`
+- `startPlayback(text, sourceName)`
+- `stopPlayback()`
+- `getPlaybackState()`
+- `listDocuments()`
+- `saveDocument(name, text)`
+- `loadDocument(name)`
 
-The initial UI is intentionally narrow: prove that Android can call the real `sbagenxlib` validation APIs and receive structured diagnostics with source spans.
+The current editor workbench can validate both `.sbg` and `.sbgf`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack.
 
 ## Snapshot provenance
 

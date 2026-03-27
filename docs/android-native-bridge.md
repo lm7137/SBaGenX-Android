@@ -11,6 +11,10 @@ The current bridge proves the minimum useful path:
 - JNI
 - vendored `sbagenxlib`
 - structured validation diagnostics returned to JS
+- a persistent native `SbxContext` for `.sbg`
+- preview PCM rendering from JNI
+- live Android playback via `AudioTrack`
+- app-local draft persistence through the React Native module
 
 The current vendored snapshot is taken from the `SBaGenX` repo's `gui-v3.0` branch at commit `5088272e38b11a762ec6e411a833f948db6f741e`.
 
@@ -19,8 +23,29 @@ The current vendored snapshot is taken from the `SBaGenX` repo's `gui-v3.0` bran
 - `getBridgeInfo()`
 - `validateSbg(text, sourceName)`
 - `validateSbgf(text, sourceName)`
+- `prepareSbgContext(text, sourceName)`
+- `getContextState()`
+- `renderPreview(frameCount, sampleValueCount)`
+- `resetContext()`
+- `startPlayback(text, sourceName)`
+- `stopPlayback()`
+- `getPlaybackState()`
+- `listDocuments()`
+- `saveDocument(name, text)`
+- `loadDocument(name)`
 
-The Kotlin module returns JSON strings from JNI and the JS wrapper parses them into typed objects. That keeps the first bridge simple while preserving the diagnostic structure from `sbagenxlib`.
+The Kotlin module returns JSON strings from JNI and the JS wrapper parses them into typed objects. That keeps the bridge simple while preserving the native diagnostic and runtime state structure from `sbagenxlib`.
+
+## Runtime model
+
+The JNI layer now owns a process-local runtime wrapper around `SbxContext`.
+
+- `.sbg` text can be loaded into a persistent native context
+- preview calls render PCM float blocks without committing to audio output
+- playback reuses the same context model and pulls PCM into an Android `AudioTrack`
+- the JS layer polls context and playback state rather than duplicating render logic
+
+At the moment, `.sbgf` support is validation-only. Playback and preview are intentionally limited to `.sbg` until the runtime surface for curves and beat generation is defined.
 
 ## Build path
 
@@ -36,16 +61,18 @@ The Android app currently builds native code for:
 
 ## Why validation first
 
-Validation is the right first milestone because it proves:
+Validation was the right first milestone because it proved:
 
 - the NDK toolchain can build the real engine
 - JNI can call `sbagenxlib`
 - diagnostics survive the bridge with line and column spans
 - the React Native app can consume native editor feedback without duplicating parser logic
 
+The repo has now moved one step further by proving persistent context lifetime, native PCM rendering, and live playback.
+
 ## Next native steps
 
-1. Add a persistent runtime context wrapper around `SbxContext`.
-2. Expose `startPlayback(text, sourceName)` and `stopPlayback()`.
-3. Add an Android audio backend that pulls PCM from `sbagenxlib`.
-4. Add optional `.sbgf` beat-preview and curve-inspection calls.
+1. Replace app-local draft storage with Android Storage Access Framework document open/save.
+2. Add waveform or transport-oriented playback UI around the current `AudioTrack` backend.
+3. Add optional `.sbgf` beat-preview and curve-inspection calls.
+4. Evaluate whether the playback backend should remain `AudioTrack` or move to AAudio/Oboe for lower-latency control.

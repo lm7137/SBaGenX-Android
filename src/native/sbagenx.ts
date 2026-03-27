@@ -25,10 +25,64 @@ export type ValidationResult = {
   diagnostics: SbaGenXDiagnostic[];
 };
 
+export type ContextState = {
+  status: number;
+  statusText: string;
+  prepared: boolean;
+  sampleRate: number;
+  channels: number;
+  timeSec: number;
+  durationSec: number;
+  sourceName: string;
+  error: string;
+};
+
+export type RenderPreviewResult = ContextState & {
+  frameCount: number;
+  sampleValueCount: number;
+  peakAbs: number;
+  rms: number;
+  samples: number[];
+};
+
+export type PlaybackState = {
+  status: number;
+  statusText: string;
+  prepared: boolean;
+  active: boolean;
+  sampleRate: number;
+  channels: number;
+  bufferFrames: number;
+  timeSec: number;
+  durationSec: number;
+  sourceName: string;
+  lastError: string;
+};
+
+export type SavedDocumentSummary = {
+  name: string;
+  sizeBytes: number;
+  modifiedAtMs: number;
+};
+
+export type LoadedDocument = SavedDocumentSummary & {
+  text: string;
+};
+
 type NativeSbaGenXModule = {
   getBridgeInfo(): Promise<string>;
   validateSbg(text: string, sourceName?: string): Promise<string>;
   validateSbgf(text: string, sourceName?: string): Promise<string>;
+  prepareSbgContext(text: string, sourceName?: string): Promise<string>;
+  getContextState(): Promise<string>;
+  renderPreview(frameCount: number, sampleValueCount: number): Promise<string>;
+  resetContext(): Promise<string>;
+  startPlayback(text: string, sourceName?: string): Promise<string>;
+  stopPlayback(): Promise<string>;
+  getPlaybackState(): Promise<string>;
+  listDocuments(): Promise<string>;
+  saveDocument(name: string, text: string): Promise<string>;
+  loadDocument(name: string): Promise<string>;
 };
 
 const nativeModule = NativeModules.SbaGenXModule as
@@ -51,6 +105,19 @@ export function isNativeBridgeAvailable(): boolean {
   return nativeModule != null;
 }
 
+export function ensureDocumentName(name: string, kind: DocumentKind): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return `untitled.${kind}`;
+  }
+
+  return /\.[^./\\]+$/u.test(trimmed) ? trimmed : `${trimmed}.${kind}`;
+}
+
+export function inferDocumentKind(name: string): DocumentKind {
+  return name.toLowerCase().endsWith('.sbgf') ? 'sbgf' : 'sbg';
+}
+
 export async function getBridgeInfo(): Promise<BridgeInfo> {
   return parseNativeJson<BridgeInfo>(requireNativeModule().getBridgeInfo());
 }
@@ -67,5 +134,71 @@ export async function validateDocument(
     kind === 'sbg'
       ? module.validateSbg(text, sourceName ?? fallbackSource)
       : module.validateSbgf(text, sourceName ?? fallbackSource),
+  );
+}
+
+export async function prepareSbgContext(
+  text: string,
+  sourceName?: string,
+): Promise<ContextState> {
+  return parseNativeJson<ContextState>(
+    requireNativeModule().prepareSbgContext(text, sourceName ?? 'scratch.sbg'),
+  );
+}
+
+export async function getContextState(): Promise<ContextState> {
+  return parseNativeJson<ContextState>(requireNativeModule().getContextState());
+}
+
+export async function renderPreview(
+  frameCount: number,
+  sampleValueCount: number,
+): Promise<RenderPreviewResult> {
+  return parseNativeJson<RenderPreviewResult>(
+    requireNativeModule().renderPreview(frameCount, sampleValueCount),
+  );
+}
+
+export async function resetContext(): Promise<ContextState> {
+  return parseNativeJson<ContextState>(requireNativeModule().resetContext());
+}
+
+export async function startPlayback(
+  text: string,
+  sourceName?: string,
+): Promise<PlaybackState> {
+  return parseNativeJson<PlaybackState>(
+    requireNativeModule().startPlayback(text, sourceName ?? 'scratch.sbg'),
+  );
+}
+
+export async function stopPlayback(): Promise<PlaybackState> {
+  return parseNativeJson<PlaybackState>(requireNativeModule().stopPlayback());
+}
+
+export async function getPlaybackState(): Promise<PlaybackState> {
+  return parseNativeJson<PlaybackState>(
+    requireNativeModule().getPlaybackState(),
+  );
+}
+
+export async function listDocuments(): Promise<SavedDocumentSummary[]> {
+  return parseNativeJson<SavedDocumentSummary[]>(
+    requireNativeModule().listDocuments(),
+  );
+}
+
+export async function saveDocument(
+  name: string,
+  text: string,
+): Promise<SavedDocumentSummary> {
+  return parseNativeJson<SavedDocumentSummary>(
+    requireNativeModule().saveDocument(name, text),
+  );
+}
+
+export async function loadDocument(name: string): Promise<LoadedDocument> {
+  return parseNativeJson<LoadedDocument>(
+    requireNativeModule().loadDocument(name),
   );
 }
