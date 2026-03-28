@@ -90,7 +90,6 @@ android {
         externalNativeBuild {
             cmake {
                 arguments "-DANDROID_STL=c++_shared"
-                cppFlags "-std=c++17"
             }
         }
     }
@@ -116,7 +115,7 @@ android {
     }
     externalNativeBuild {
         cmake {
-            path file("../../native/jni/CMakeLists.txt")
+            path file("src/main/jni/CMakeLists.txt")
         }
     }
 }
