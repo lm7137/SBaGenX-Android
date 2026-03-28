@@ -33,9 +33,16 @@ import {
   type SbaGenXDiagnostic,
   validateDocument,
 } from '../native/sbagenx';
+import { WebsiteBackdrop } from './WebsiteBackdrop';
 
 const brandIcon = require('../assets/sbagenx-icon.png');
-const backgroundTile = require('../assets/bg-tile.gif');
+const heroBlueOrb = require('../assets/hero-blue-orb.png');
+const heroPinkOrb = require('../assets/hero-pink-orb.png');
+
+const SURFACE_SOFT = 'rgba(224, 224, 216, 0.96)';
+const SURFACE_GLASS = SURFACE_SOFT;
+const SURFACE_BORDER = SURFACE_SOFT;
+const SURFACE_BORDER_LIGHT = SURFACE_SOFT;
 
 const VALID_SBG_SAMPLE =
   '00:00    200+10/20 step\n00:30    190+8/20\n01:00    180+6/20\n';
@@ -473,17 +480,7 @@ export function ValidationWorkbench() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.root}>
-        <View pointerEvents="none" style={styles.backgroundTileWrap}>
-          <Image
-            resizeMode="repeat"
-            source={backgroundTile}
-            style={styles.backgroundTile}
-          />
-        </View>
-        <View pointerEvents="none" style={styles.backgroundOverlay} />
-        <View pointerEvents="none" style={[styles.backgroundOrb, styles.blueOrb]} />
-        <View pointerEvents="none" style={[styles.backgroundOrb, styles.pinkOrb]} />
-        <View pointerEvents="none" style={[styles.backgroundOrb, styles.bottomOrb]} />
+        <WebsiteBackdrop />
 
         <ScrollView
           style={styles.scrollView}
@@ -491,8 +488,8 @@ export function ValidationWorkbench() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={[styles.card, styles.cardSoft, styles.heroCard]}>
-            <View style={styles.heroAccentBlue} />
-            <View style={styles.heroAccentPink} />
+            <Image source={heroBlueOrb} style={styles.heroAccentBlue} />
+            <Image source={heroPinkOrb} style={styles.heroAccentPink} />
 
             <View style={styles.heroTopRow}>
               <View style={styles.brandLockup}>
@@ -872,42 +869,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f6f6f2',
   },
-  backgroundTileWrap: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  backgroundTile: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0.34,
-  },
-  backgroundOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(246, 246, 242, 0.72)',
-  },
-  backgroundOrb: {
-    position: 'absolute',
-    borderRadius: 999,
-  },
-  blueOrb: {
-    top: -70,
-    left: -110,
-    width: 300,
-    height: 240,
-    backgroundColor: 'rgba(58, 124, 255, 0.12)',
-  },
-  pinkOrb: {
-    top: 40,
-    right: -110,
-    width: 260,
-    height: 220,
-    backgroundColor: 'rgba(255, 46, 166, 0.10)',
-  },
-  bottomOrb: {
-    bottom: 80,
-    left: 24,
-    width: 220,
-    height: 180,
-    backgroundColor: 'rgba(58, 124, 255, 0.07)',
-  },
   scrollView: {
     flex: 1,
   },
@@ -920,18 +881,19 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: 'rgba(20, 20, 20, 0.12)',
+    borderColor: SURFACE_BORDER,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 24,
     elevation: 4,
   },
   cardSoft: {
-    backgroundColor: 'rgba(255, 255, 255, 0.84)',
+    backgroundColor: SURFACE_SOFT,
   },
   cardGlass: {
-    backgroundColor: 'rgba(255, 255, 255, 0.74)',
+    backgroundColor: SURFACE_GLASS,
+    borderColor: SURFACE_BORDER_LIGHT,
   },
   heroCard: {
     overflow: 'hidden',
@@ -944,8 +906,7 @@ const styles = StyleSheet.create({
     left: -40,
     width: 180,
     height: 180,
-    borderRadius: 999,
-    backgroundColor: 'rgba(58, 124, 255, 0.10)',
+    resizeMode: 'stretch',
   },
   heroAccentPink: {
     position: 'absolute',
@@ -953,8 +914,7 @@ const styles = StyleSheet.create({
     top: -44,
     width: 170,
     height: 170,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255, 46, 166, 0.10)',
+    resizeMode: 'stretch',
   },
   heroTopRow: {
     gap: 14,
@@ -1264,8 +1224,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   innerGlassCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.70)',
-    borderColor: 'rgba(0, 0, 0, 0.10)',
+    backgroundColor: SURFACE_GLASS,
+    borderColor: SURFACE_BORDER_LIGHT,
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
@@ -1318,8 +1278,8 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   diagnosticCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.74)',
-    borderColor: 'rgba(20, 20, 20, 0.10)',
+    backgroundColor: SURFACE_GLASS,
+    borderColor: SURFACE_BORDER_LIGHT,
     paddingHorizontal: 14,
     paddingVertical: 14,
     marginBottom: 10,
@@ -1363,8 +1323,8 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   documentCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.70)',
-    borderColor: 'rgba(0, 0, 0, 0.10)',
+    backgroundColor: SURFACE_GLASS,
+    borderColor: SURFACE_BORDER_LIGHT,
     marginBottom: 10,
     paddingHorizontal: 14,
     paddingVertical: 14,
