@@ -34,6 +34,10 @@ export type ContextState = {
   timeSec: number;
   durationSec: number;
   sourceName: string;
+  mixActive?: boolean;
+  mixLooping?: boolean;
+  mixPath?: string;
+  mixSourceName?: string;
   error: string;
 };
 
@@ -56,6 +60,10 @@ export type PlaybackState = {
   timeSec: number;
   durationSec: number;
   sourceName: string;
+  mixActive?: boolean;
+  mixLooping?: boolean;
+  mixPath?: string;
+  mixSourceName?: string;
   lastError: string;
 };
 

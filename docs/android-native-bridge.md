@@ -14,6 +14,8 @@ The current bridge proves the minimum useful path:
 - a persistent native `SbxContext` for `.sbg`
 - preview PCM rendering from JNI
 - live Android playback via `AudioTrack`
+- safe `-SE` preamble parsing before `.sbg` runtime prepare
+- Android-side mix-source resolution and decode for `.sbg` `-m` inputs
 - app-local draft persistence through the React Native module
 
 The current vendored snapshot is taken from the `SBaGenX` repo's `gui-v3.0` branch at commit `5088272e38b11a762ec6e411a833f948db6f741e`.
@@ -41,11 +43,21 @@ The Kotlin module returns JSON strings from JNI and the JS wrapper parses them i
 The JNI layer now owns a process-local runtime wrapper around `SbxContext`.
 
 - `.sbg` text can be loaded into a persistent native context
+- safe sequence preambles are parsed before the timing loader runs
 - preview calls render PCM float blocks without committing to audio output
+- decoded mix PCM is stored natively and applied through `sbx_context_mix_stream_sample()`
 - playback reuses the same context model and pulls PCM into an Android `AudioTrack`
 - the JS layer polls context and playback state rather than duplicating render logic
 
 At the moment, `.sbgf` support is validation-only. Playback and preview are intentionally limited to `.sbg` until the runtime surface for curves and beat generation is defined.
+
+Current mix-input rules:
+
+- bundled app assets like `river1.ogg` and `river2.ogg` resolve directly from `.sbg` `-m` lines
+- absolute file paths and `file://` paths are supported
+- `content://` URIs are supported when Android has permission to read them
+- relative file paths are only resolved when the `.sbg` source name is itself a file path
+- mix section suffixes like `#1` are not supported yet by the Android runtime
 
 ## Build path
 

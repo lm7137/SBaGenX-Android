@@ -11,7 +11,15 @@ object SbagenxBridge {
 
   external fun nativeValidateSbgf(text: String, sourceName: String): String
 
-  external fun nativePrepareSbgContext(text: String, sourceName: String): String
+  external fun nativeInspectSbgRuntimeConfig(text: String, sourceName: String): String
+
+  external fun nativePrepareSbgContext(
+      text: String,
+      sourceName: String,
+      mixSamples: ShortArray?,
+      mixSourceName: String,
+      mixLooping: Boolean,
+  ): String
 
   external fun nativeGetContextState(): String
 

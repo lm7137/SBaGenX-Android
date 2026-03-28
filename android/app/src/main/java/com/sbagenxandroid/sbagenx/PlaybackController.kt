@@ -7,7 +7,7 @@ import android.os.Process
 import org.json.JSONObject
 import kotlin.math.max
 
-class PlaybackController {
+class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
   private val lock = Any()
 
   @Volatile private var isPlaying = false
@@ -21,7 +21,7 @@ class PlaybackController {
   fun start(text: String, sourceName: String): String {
     stopInternal(join = true)
 
-    val prepState = JSONObject(SbagenxBridge.nativePrepareSbgContext(text, sourceName))
+    val prepState = JSONObject(runtimeLoader.prepare(text, sourceName))
     if (prepState.optInt("status", -1) != 0 || !prepState.optBoolean("prepared", false)) {
       synchronized(lock) {
         activeSourceName = sourceName
@@ -192,6 +192,10 @@ class PlaybackController {
         .put("timeSec", nativeState.optDouble("timeSec", 0.0))
         .put("durationSec", nativeState.optDouble("durationSec", 0.0))
         .put("sourceName", sourceName ?: activeSourceName.orEmpty())
+        .put("mixActive", nativeState.optBoolean("mixActive", false))
+        .put("mixLooping", nativeState.optBoolean("mixLooping", false))
+        .put("mixPath", nativeState.optString("mixPath"))
+        .put("mixSourceName", nativeState.optString("mixSourceName"))
         .put(
             "lastError",
             lastError ?: nativeState.optString("error").takeIf { it.isNotBlank() }.orEmpty(),

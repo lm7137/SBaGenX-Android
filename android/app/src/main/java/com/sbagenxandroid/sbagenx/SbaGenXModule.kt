@@ -8,7 +8,8 @@ import com.facebook.react.bridge.ReactMethod
 class SbaGenXModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
-  private val playbackController = PlaybackController()
+  private val runtimeLoader = SbgRuntimeLoader(MixInputResolver(reactContext))
+  private val playbackController = PlaybackController(runtimeLoader)
   private val localDocumentStore = LocalDocumentStore(reactContext)
 
   override fun getName(): String = NAME
@@ -37,7 +38,7 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   @ReactMethod
   fun prepareSbgContext(text: String, sourceName: String?, promise: Promise) {
     resolveNativeCall(promise) {
-      SbagenxBridge.nativePrepareSbgContext(text, sourceName ?: "scratch.sbg")
+      runtimeLoader.prepare(text, sourceName ?: "scratch.sbg")
     }
   }
 

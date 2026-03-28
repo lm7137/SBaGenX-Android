@@ -14,6 +14,8 @@ The repo is scaffolded as a plain React Native app and already includes:
 - a persistent native `SbxContext` for `.sbg` documents
 - preview rendering of PCM float samples from JNI without audio output
 - live Android playback for `.sbg` via `AudioTrack`
+- safe `-SE` preamble handling during `.sbg` prepare/playback
+- runtime mix support for `.sbg` `-m` inputs resolved from bundled app assets, file paths, or `content://` URIs
 - app-local draft save/load inside Android app storage
 
 What is not implemented yet:
@@ -84,6 +86,13 @@ cd android
 - `loadDocument(name)`
 
 The current editor workbench can validate both `.sbg` and `.sbgf`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack.
+
+Bundled Android app assets now include:
+
+- `river1.ogg`
+- `river2.ogg`
+
+That means desktop-style examples such as `-SE -m river1.ogg` can resolve inside the Android app without needing an external document picker first.
 
 ## Snapshot provenance
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   Pressable,
@@ -33,6 +33,7 @@ import {
   type SbaGenXDiagnostic,
   validateDocument,
 } from '../native/sbagenx';
+import { SbaGenXEditor } from './SbaGenXEditor';
 import { WebsiteBackdrop } from './WebsiteBackdrop';
 
 const brandIcon = require('../assets/sbagenx-icon.png');
@@ -185,10 +186,12 @@ export function ValidationWorkbench() {
   );
   const [documents, setDocuments] = useState<SavedDocumentSummary[]>([]);
   const [isValidating, setIsValidating] = useState(false);
+  const [isLiveValidating, setIsLiveValidating] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlayingAction, setIsPlayingAction] = useState(false);
+  const validationRequestIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -266,11 +269,27 @@ export function ValidationWorkbench() {
     setDocuments(await listDocuments());
   }
 
-  async function runValidation() {
-    setIsValidating(true);
+  async function runValidationFor(
+    kind: DocumentKind,
+    nextText: string,
+    nextResolvedName: string,
+    mode: 'manual' | 'live',
+  ) {
+    const requestId = validationRequestIdRef.current + 1;
+    validationRequestIdRef.current = requestId;
+
+    if (mode === 'manual') {
+      setIsValidating(true);
+    } else {
+      setIsLiveValidating(true);
+    }
 
     try {
-      const result = await validateDocument(documentKind, text, resolvedName);
+      const result = await validateDocument(kind, nextText, nextResolvedName);
+
+      if (requestId !== validationRequestIdRef.current) {
+        return;
+      }
 
       setDiagnostics(result.diagnostics);
       setBridgeError(null);
@@ -280,22 +299,48 @@ export function ValidationWorkbench() {
           `Native status ${result.status} (${result.statusText}).`,
         );
       } else if (result.diagnosticCount === 0) {
-        setValidationState('Validation passed with no diagnostics.');
+        setValidationState(
+          mode === 'live'
+            ? 'Live validation passed with no diagnostics.'
+            : 'Validation passed with no diagnostics.',
+        );
       } else {
         setValidationState(
-          `Validation returned ${result.diagnosticCount} diagnostic${
+          `${
+            mode === 'live' ? 'Live validation' : 'Validation'
+          } returned ${result.diagnosticCount} diagnostic${
             result.diagnosticCount === 1 ? '' : 's'
           }.`,
         );
       }
     } catch (error) {
+      if (requestId !== validationRequestIdRef.current) {
+        return;
+      }
+
       const message =
         error instanceof Error ? error.message : 'Unknown validation error.';
       setBridgeError(message);
-      setValidationState('Validation failed before diagnostics were returned.');
+      setValidationState(
+        mode === 'live'
+          ? 'Live validation failed before diagnostics were returned.'
+          : 'Validation failed before diagnostics were returned.',
+      );
     } finally {
-      setIsValidating(false);
+      if (requestId !== validationRequestIdRef.current) {
+        return;
+      }
+
+      if (mode === 'manual') {
+        setIsValidating(false);
+      } else {
+        setIsLiveValidating(false);
+      }
     }
+  }
+
+  async function runValidation() {
+    await runValidationFor(documentKind, text, resolvedName, 'manual');
   }
 
   async function handlePrepareContext() {
@@ -477,6 +522,28 @@ export function ValidationWorkbench() {
       .map(value => value.toFixed(3))
       .join(', ') ?? '';
 
+  function handleEditorTextChange(nextText: string) {
+    setText(nextText);
+    setDiagnostics([]);
+    setPreviewState(null);
+    setBridgeError(null);
+    setValidationState('Live validation pending...');
+  }
+
+  useEffect(() => {
+    if (!nativeAvailability) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      runValidationFor(documentKind, text, resolvedName, 'live').catch(() => {});
+    }, 180);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [documentKind, nativeAvailability, resolvedName, text]);
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.root}>
@@ -647,7 +714,13 @@ export function ValidationWorkbench() {
               />
               <ActionButton
                 disabled={isValidating}
-                label={isValidating ? 'Validating...' : 'Validate Natively'}
+                label={
+                  isValidating
+                    ? 'Validating...'
+                    : isLiveValidating
+                    ? 'Validate Now'
+                    : 'Validate Natively'
+                }
                 onPress={runValidation}
                 tone="primary"
               />
@@ -658,12 +731,18 @@ export function ValidationWorkbench() {
               <Text style={styles.inlineCode}>{resolvedName}</Text>
             </Text>
 
-            <TextInput
-              multiline
-              onChangeText={setText}
+            <Text style={styles.note}>
+              Inline diagnostics refresh automatically while you type.
+            </Text>
+
+            <SbaGenXEditor
+              diagnostics={diagnostics}
+              onTextChange={event => {
+                handleEditorTextChange(event.nativeEvent.text);
+              }}
+              placeholder="Compose .sbg or .sbgf text here."
               style={styles.editor}
-              textAlignVertical="top"
-              value={text}
+              text={text}
             />
           </View>
 
@@ -1199,17 +1278,8 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
   },
   editor: {
-    minHeight: 300,
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderColor: 'rgba(0, 0, 0, 0.12)',
-    borderRadius: 16,
-    borderWidth: 1,
-    color: '#141414',
-    fontFamily: 'monospace',
-    fontSize: 14,
-    lineHeight: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    minHeight: 320,
+    overflow: 'hidden',
   },
   statusLine: {
     color: 'rgba(20, 20, 20, 0.78)',

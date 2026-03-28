@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -15,7 +17,7 @@ extern "C" {
 
 namespace {
 
-constexpr const char *kBridgeVersion = "0.2.0";
+constexpr const char *kBridgeVersion = "0.3.0";
 
 std::string escape_json(const std::string &input) {
   std::string out;
@@ -123,6 +125,16 @@ void append_float_array_json(std::ostringstream &json,
   json << ']';
 }
 
+float clamp_unit_float(double value) {
+  if (value > 1.0) {
+    return 1.0f;
+  }
+  if (value < -1.0) {
+    return -1.0f;
+  }
+  return static_cast<float>(value);
+}
+
 struct ContextDeleter {
   void operator()(SbxContext *ctx) const {
     if (ctx) {
@@ -131,6 +143,65 @@ struct ContextDeleter {
   }
 };
 
+struct SafeSeqPreparedText {
+  SafeSeqPreparedText() {
+    sbx_default_safe_seqfile_preamble(&config);
+  }
+
+  ~SafeSeqPreparedText() {
+    if (prepared_text) {
+      std::free(prepared_text);
+    }
+    sbx_free_safe_seqfile_preamble(&config);
+  }
+
+  char *prepared_text = nullptr;
+  SbxSafeSeqfilePreamble config{};
+};
+
+int parse_safe_sbg_text(const std::string &text,
+                        SafeSeqPreparedText *out,
+                        std::string *out_error) {
+  if (!out) {
+    return SBX_EINVAL;
+  }
+
+  char errbuf[512];
+  errbuf[0] = '\0';
+
+  const int status = sbx_prepare_safe_seq_text(text.c_str(),
+                                               &out->prepared_text,
+                                               &out->config,
+                                               errbuf,
+                                               sizeof(errbuf));
+  if (status != SBX_OK && out_error) {
+    *out_error = errbuf[0] ? errbuf : "Failed to parse .sbg text.";
+  }
+
+  return status;
+}
+
+std::string build_sbg_runtime_config_json(int status,
+                                          const std::string &source_name,
+                                          double sample_rate,
+                                          const std::string &mix_path,
+                                          const std::string &error) {
+  std::ostringstream json;
+  json << '{'
+       << "\"status\":" << status << ','
+       << "\"statusText\":\"" << escape_json(status_text(status)) << "\","
+       << "\"prepared\":false,"
+       << "\"sampleRate\":" << sample_rate << ','
+       << "\"channels\":2,"
+       << "\"timeSec\":0.0,"
+       << "\"durationSec\":0.0,"
+       << "\"sourceName\":\"" << escape_json(source_name) << "\","
+       << "\"mixPath\":\"" << escape_json(mix_path) << "\","
+       << "\"error\":\"" << escape_json(error) << "\""
+       << '}';
+  return json.str();
+}
+
 class BridgeRuntimeState {
  public:
   BridgeRuntimeState() {
@@ -138,11 +209,40 @@ class BridgeRuntimeState {
   }
 
   std::string prepare_sbg_context(const std::string &text,
-                                  const std::string &source_name) {
+                                  const std::string &source_name,
+                                  const int16_t *mix_samples,
+                                  size_t mix_sample_count,
+                                  const std::string &mix_source_name,
+                                  bool mix_looping) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     clear_locked();
+    source_name_ = source_name.empty() ? "scratch.sbg" : source_name;
+
+    SafeSeqPreparedText prepared;
+    std::string parse_error;
+    const int parse_status = parse_safe_sbg_text(text, &prepared, &parse_error);
+    if (parse_status != SBX_OK) {
+      clear_locked();
+      return build_context_state_json_locked(parse_status, parse_error);
+    }
+
     sbx_default_engine_config(&config_);
+    if (prepared.config.have_r) {
+      config_.sample_rate = static_cast<double>(prepared.config.rate);
+    }
+
+    const bool mix_required =
+        prepared.config.mix_path && prepared.config.mix_path[0];
+    const std::string requested_mix_path =
+        mix_required ? prepared.config.mix_path : "";
+    if (mix_required && (!mix_samples || mix_sample_count < 2U)) {
+      clear_locked();
+      mix_path_ = requested_mix_path;
+      return build_context_state_json_locked(
+          SBX_EINVAL,
+          "This .sbg declares a mix input (-m), but no decoded mix stream was supplied.");
+    }
 
     SbxContext *raw_ctx = sbx_context_create(&config_);
     if (!raw_ctx) {
@@ -151,10 +251,66 @@ class BridgeRuntimeState {
     }
 
     std::unique_ptr<SbxContext, ContextDeleter> next_ctx(raw_ctx);
-    source_name_ = source_name.empty() ? "scratch.sbg" : source_name;
 
-    const int status =
-        sbx_context_load_sbg_timing_text(next_ctx.get(), text.c_str(), 0);
+    int status = SBX_OK;
+    if (prepared.config.have_w) {
+      status =
+          sbx_context_set_default_waveform(next_ctx.get(), prepared.config.waveform);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        clear_locked();
+        return build_context_state_json_locked(
+            status,
+            error && error[0] ? error
+                              : "Failed to apply default waveform override.");
+      }
+    }
+
+    if (prepared.config.have_I) {
+      status = sbx_context_set_sequence_iso_override(next_ctx.get(),
+                                                     &prepared.config.iso_env);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        clear_locked();
+        return build_context_state_json_locked(
+            status,
+            error && error[0]
+                ? error
+                : "Failed to apply sequence isochronic envelope override.");
+      }
+    }
+
+    if (prepared.config.have_H) {
+      status = sbx_context_set_sequence_mixam_override(next_ctx.get(),
+                                                       &prepared.config.mixam_env);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        clear_locked();
+        return build_context_state_json_locked(
+            status,
+            error && error[0]
+                ? error
+                : "Failed to apply sequence mixam envelope override.");
+      }
+    }
+
+    if (prepared.config.have_c) {
+      status =
+          sbx_context_set_amp_adjust(next_ctx.get(), &prepared.config.amp_adjust);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        clear_locked();
+        return build_context_state_json_locked(
+            status,
+            error && error[0]
+                ? error
+                : "Failed to apply runtime amplitude-adjust profile.");
+      }
+    }
+
+    status = sbx_context_load_sbg_timing_text(next_ctx.get(),
+                                              prepared.prepared_text,
+                                              0);
     if (status != SBX_OK) {
       const char *error = sbx_context_last_error(next_ctx.get());
       clear_locked();
@@ -162,8 +318,38 @@ class BridgeRuntimeState {
           status, error && error[0] ? error : "Failed to load .sbg text.");
     }
 
+    if (prepared.config.have_A) {
+      SbxMixModSpec mix_mod = prepared.config.mix_mod;
+      const double duration_sec = sbx_context_duration_sec(next_ctx.get());
+      mix_mod.active = 1;
+      if (mix_mod.main_len_sec <= 0.0) {
+        mix_mod.main_len_sec = duration_sec > 0.0 ? duration_sec : 1.0;
+      }
+      if (mix_mod.wake_len_sec < 0.0) {
+        mix_mod.wake_len_sec = 0.0;
+      }
+      status = sbx_context_set_mix_mod(next_ctx.get(), &mix_mod);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        clear_locked();
+        return build_context_state_json_locked(
+            status,
+            error && error[0]
+                ? error
+                : "Failed to apply runtime mix modulation profile.");
+      }
+    }
+
     duration_sec_ = sbx_context_duration_sec(next_ctx.get());
     context_ = std::move(next_ctx);
+    mix_path_ = requested_mix_path;
+    if (mix_required) {
+      mix_source_name_ = mix_source_name.empty() ? requested_mix_path : mix_source_name;
+      mix_looping_ = mix_looping;
+      mix_cursor_frame_ = 0U;
+      mix_samples_.assign(mix_samples, mix_samples + mix_sample_count);
+    }
+
     return build_context_state_json_locked(SBX_OK, "");
   }
 
@@ -180,6 +366,7 @@ class BridgeRuntimeState {
     }
 
     sbx_context_reset(context_.get());
+    mix_cursor_frame_ = 0U;
     return build_context_state_json_locked(SBX_OK, "");
   }
 
@@ -213,6 +400,7 @@ class BridgeRuntimeState {
     const size_t sample_count = frames * static_cast<size_t>(config_.channels);
     preview_buffer_.assign(sample_count, 0.0f);
     const double resume_time = sbx_context_time_sec(context_.get());
+    const size_t resume_mix_cursor = mix_cursor_frame_;
 
     const int render_status =
         sbx_context_render_f32(context_.get(), preview_buffer_.data(), frames);
@@ -226,6 +414,20 @@ class BridgeRuntimeState {
           nullptr,
           0,
           error && error[0] ? error : "Failed to render preview frames.");
+    }
+
+    const int mix_status =
+        apply_mix_stream_locked(preview_buffer_.data(), frames, resume_time);
+    if (mix_status != SBX_OK) {
+      mix_cursor_frame_ = resume_mix_cursor;
+      return build_preview_json_locked(
+          mix_status,
+          frames,
+          0.0,
+          0.0,
+          nullptr,
+          0,
+          context_error_locked());
     }
 
     float peak_abs = 0.0f;
@@ -248,6 +450,7 @@ class BridgeRuntimeState {
 
     const int restore_status =
         sbx_context_set_time_sec(context_.get(), resume_time);
+    mix_cursor_frame_ = resume_mix_cursor;
     if (restore_status != SBX_OK) {
       const char *error = sbx_context_last_error(context_.get());
       return build_preview_json_locked(
@@ -281,7 +484,13 @@ class BridgeRuntimeState {
       return SBX_EINVAL;
     }
 
-    return sbx_context_render_f32(context_.get(), out, frames);
+    const double start_time_sec = sbx_context_time_sec(context_.get());
+    const int render_status = sbx_context_render_f32(context_.get(), out, frames);
+    if (render_status != SBX_OK) {
+      return render_status;
+    }
+
+    return apply_mix_stream_locked(out, frames, start_time_sec);
   }
 
  private:
@@ -301,6 +510,10 @@ class BridgeRuntimeState {
          << ','
          << "\"durationSec\":" << (context_ ? duration_sec_ : 0.0) << ','
          << "\"sourceName\":\"" << escape_json(source_name_) << "\","
+         << "\"mixActive\":" << (!mix_samples_.empty() ? "true" : "false") << ','
+         << "\"mixLooping\":" << (mix_looping_ ? "true" : "false") << ','
+         << "\"mixPath\":\"" << escape_json(mix_path_) << "\","
+         << "\"mixSourceName\":\"" << escape_json(mix_source_name_) << "\","
          << "\"error\":\"" << escape_json(error) << "\""
          << '}';
 
@@ -332,6 +545,10 @@ class BridgeRuntimeState {
          << "\"peakAbs\":" << peak_abs << ','
          << "\"rms\":" << rms << ','
          << "\"sourceName\":\"" << escape_json(source_name_) << "\","
+         << "\"mixActive\":" << (!mix_samples_.empty() ? "true" : "false") << ','
+         << "\"mixLooping\":" << (mix_looping_ ? "true" : "false") << ','
+         << "\"mixPath\":\"" << escape_json(mix_path_) << "\","
+         << "\"mixSourceName\":\"" << escape_json(mix_source_name_) << "\","
          << "\"error\":\"" << escape_json(error) << "\","
          << "\"samples\":";
 
@@ -359,6 +576,64 @@ class BridgeRuntimeState {
     source_name_.clear();
     duration_sec_ = 0.0;
     preview_buffer_.clear();
+    mix_samples_.clear();
+    mix_path_.clear();
+    mix_source_name_.clear();
+    mix_cursor_frame_ = 0U;
+    mix_looping_ = false;
+  }
+
+  int apply_mix_stream_locked(float *io, size_t frames, double start_time_sec) {
+    if (!context_ || !io || mix_samples_.empty()) {
+      return SBX_OK;
+    }
+
+    const size_t mix_frame_count =
+        mix_samples_.size() / static_cast<size_t>(config_.channels);
+    if (mix_frame_count == 0U) {
+      return SBX_OK;
+    }
+
+    const double sample_rate = config_.sample_rate;
+    if (!(std::isfinite(sample_rate) && sample_rate > 0.0)) {
+      return SBX_ENOTREADY;
+    }
+
+    size_t cursor_frame = mix_cursor_frame_;
+    for (size_t frame = 0; frame < frames; ++frame) {
+      if (cursor_frame >= mix_frame_count) {
+        if (!mix_looping_) {
+          break;
+        }
+        cursor_frame = 0U;
+      }
+
+      double mix_add_l = 0.0;
+      double mix_add_r = 0.0;
+      const size_t sample_index = frame * 2U;
+      const size_t mix_index = cursor_frame * 2U;
+      const int status = sbx_context_mix_stream_sample(
+          context_.get(),
+          start_time_sec + static_cast<double>(frame) / sample_rate,
+          static_cast<int>(mix_samples_[mix_index]),
+          static_cast<int>(mix_samples_[mix_index + 1U]),
+          1.0,
+          &mix_add_l,
+          &mix_add_r);
+      if (status != SBX_OK) {
+        return status;
+      }
+
+      const double out_l = static_cast<double>(io[sample_index]) * 32767.0 + mix_add_l;
+      const double out_r =
+          static_cast<double>(io[sample_index + 1U]) * 32767.0 + mix_add_r;
+      io[sample_index] = clamp_unit_float(out_l / 32767.0);
+      io[sample_index + 1U] = clamp_unit_float(out_r / 32767.0);
+      ++cursor_frame;
+    }
+
+    mix_cursor_frame_ = cursor_frame;
+    return SBX_OK;
   }
 
   mutable std::mutex mutex_;
@@ -367,6 +642,11 @@ class BridgeRuntimeState {
   std::string source_name_;
   double duration_sec_ = 0.0;
   std::vector<float> preview_buffer_;
+  std::vector<int16_t> mix_samples_;
+  std::string mix_path_;
+  std::string mix_source_name_;
+  size_t mix_cursor_frame_ = 0U;
+  bool mix_looping_ = false;
 };
 
 BridgeRuntimeState &runtime_state() {
@@ -428,6 +708,25 @@ std::string validate_text(const std::string &text,
   return json;
 }
 
+std::string inspect_sbg_runtime_json(const std::string &text,
+                                     const std::string &source_name) {
+  const std::string safe_source =
+      source_name.empty() ? "scratch.sbg" : source_name;
+  SafeSeqPreparedText prepared;
+  std::string error;
+  const int status = parse_safe_sbg_text(text, &prepared, &error);
+  const double sample_rate =
+      status == SBX_OK && prepared.config.have_r ? prepared.config.rate : 44100.0;
+  const std::string mix_path =
+      status == SBX_OK && prepared.config.mix_path ? prepared.config.mix_path : "";
+
+  return build_sbg_runtime_config_json(status,
+                                       safe_source,
+                                       sample_rate,
+                                       mix_path,
+                                       error);
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -462,15 +761,45 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeValidateSbgf(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareSbgContext(
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeInspectSbgRuntimeConfig(
     JNIEnv *env,
     jobject /* this */,
     jstring text,
     jstring source_name) {
   return to_jstring(env,
+                    inspect_sbg_runtime_json(jstring_to_utf8(env, text),
+                                             jstring_to_utf8(env, source_name)));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareSbgContext(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring text,
+    jstring source_name,
+    jshortArray mix_samples,
+    jstring mix_source_name,
+    jboolean mix_looping) {
+  std::vector<int16_t> mix_copy;
+  if (mix_samples) {
+    const jsize mix_count = env->GetArrayLength(mix_samples);
+    if (mix_count > 0) {
+      mix_copy.resize(static_cast<size_t>(mix_count));
+      env->GetShortArrayRegion(mix_samples,
+                               0,
+                               mix_count,
+                               reinterpret_cast<jshort *>(mix_copy.data()));
+    }
+  }
+
+  return to_jstring(env,
                     runtime_state().prepare_sbg_context(
                         jstring_to_utf8(env, text),
-                        jstring_to_utf8(env, source_name)));
+                        jstring_to_utf8(env, source_name),
+                        mix_copy.empty() ? nullptr : mix_copy.data(),
+                        mix_copy.size(),
+                        jstring_to_utf8(env, mix_source_name),
+                        mix_looping == JNI_TRUE));
 }
 
 extern "C" JNIEXPORT jstring JNICALL
