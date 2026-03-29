@@ -18,6 +18,7 @@ import {
   isNativeBridgeAvailable,
   listDocuments,
   loadDocument,
+  pickMixInput,
   prepareSbgContext,
   renderPreview,
   saveDocument,
@@ -45,13 +46,39 @@ const SURFACE_GLASS = SURFACE_SOFT;
 const SURFACE_BORDER = SURFACE_SOFT;
 const SURFACE_BORDER_LIGHT = SURFACE_SOFT;
 
+const DEFAULT_SBG_NAME = 'examples/plus/deep-sleep-aid.sbg';
+const DEFAULT_SBGF_NAME = 'examples/basics/curve-expfit-solve-demo.sbgf';
+
 const VALID_SBG_SAMPLE =
-  '00:00    200+10/20\n00:30    190+8/20\n01:00    180+6/20\n';
+  '## Deep Sleep Aid - 45 minutes\n' +
+  '## Gradually transitions from alpha to delta to help you fall asleep\n\n' +
+  '-SE\n\n' +
+  '# Define tone sets\n' +
+  'ts-relax: brown/60 300+10/15\n' +
+  'ts-drowsy: brown/60 200+7/20\n' +
+  'ts-sleep: brown/70 100+3/25\n' +
+  'ts-deep-sleep: brown/70 100+1.5/20\n' +
+  'off: -\n\n' +
+  '# Timeline\n' +
+  '00:00:00 off ->\n' +
+  '00:00:15 ts-relax\n' +
+  '00:09:00 ts-relax ->\n' +
+  '00:10:00 ts-drowsy\n' +
+  '00:19:00 ts-drowsy ->\n' +
+  '00:20:00 ts-sleep\n' +
+  '00:29:00 ts-sleep ->\n' +
+  '00:30:00 ts-deep-sleep\n' +
+  '00:44:00 ts-deep-sleep ->\n' +
+  '00:45:00 off\n';
 
 const INVALID_SBG_SAMPLE = '-SE\n-Z nope\n\nalloff: -\n\nNOW alloff\n';
 
 const VALID_SBGF_SAMPLE =
   '# SBaGenX custom curve example (.sbgf)\n' +
+  '# Exponential beat curve with constants solved from boundary conditions.\n' +
+  '#\n' +
+  '# Usage example:\n' +
+  '#   sbagenx -P -p curve examples/basics/curve-expfit-solve-demo.sbgf 00ls:l=0.15\n\n' +
   'param l = 0.15\n' +
   'solve A,C : A*exp(-l*0)+C=b0 ; A*exp(-l*D)+C=b1\n\n' +
   'beat = A*exp(-l*m) + C\n' +
@@ -61,17 +88,24 @@ const INVALID_SBGF_SAMPLE = 'title "broken"\nbeat =\n';
 
 const DOCUMENT_PRESETS: Record<
   DocumentKind,
-  { sample: string; broken: string; sourceName: string }
+  {
+    sample: string;
+    sampleName: string;
+    broken: string;
+    brokenName: string;
+  }
 > = {
   sbg: {
     sample: VALID_SBG_SAMPLE,
+    sampleName: DEFAULT_SBG_NAME,
     broken: INVALID_SBG_SAMPLE,
-    sourceName: 'scratch.sbg',
+    brokenName: 'scratch.sbg',
   },
   sbgf: {
     sample: VALID_SBGF_SAMPLE,
+    sampleName: DEFAULT_SBGF_NAME,
     broken: INVALID_SBGF_SAMPLE,
-    sourceName: 'scratch.sbgf',
+    brokenName: 'scratch.sbgf',
   },
 };
 
@@ -87,10 +121,6 @@ type ActionButtonProps = {
 type MetricCardProps = {
   label: string;
   value: string;
-};
-
-type HeroChipProps = {
-  label: string;
 };
 
 function formatSpan(diagnostic: SbaGenXDiagnostic): string {
@@ -115,6 +145,80 @@ function formatTimestamp(value: number): string {
 
 function formatCurveValue(value: number): string {
   return Math.abs(value) >= 10 ? value.toFixed(3) : value.toFixed(4);
+}
+
+function findSafePreambleMixPath(text: string): string | null {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const safeIndex = lines.findIndex(line => line.trim() === '-SE');
+  if (safeIndex < 0) {
+    return null;
+  }
+
+  for (let index = safeIndex + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    if (trimmed.startsWith('-m ')) {
+      return trimmed.slice(3).trim() || null;
+    }
+
+    if (!trimmed.startsWith('-')) {
+      break;
+    }
+  }
+
+  return null;
+}
+
+function upsertSafePreambleMixPath(text: string, mixPath: string): string {
+  const normalizedText = text.replace(/\r\n/g, '\n');
+  const lines = normalizedText.split('\n');
+  const safeIndex = lines.findIndex(line => line.trim() === '-SE');
+
+  if (safeIndex < 0) {
+    return ['-SE', `-m ${mixPath}`, '', normalizedText].join('\n');
+  }
+
+  let insertIndex = safeIndex + 1;
+  for (let index = safeIndex + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (!trimmed) {
+      insertIndex = index + 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('-m ')) {
+      lines[index] = `-m ${mixPath}`;
+      return lines.join('\n');
+    }
+
+    if (!trimmed.startsWith('-')) {
+      break;
+    }
+
+    insertIndex = index + 1;
+  }
+
+  lines.splice(insertIndex, 0, `-m ${mixPath}`);
+  return lines.join('\n');
+}
+
+function summarizeMixReference(mixPath: string): string {
+  const trimmed = mixPath.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const lastSlash = trimmed.lastIndexOf('/');
+  const candidate = lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
+
+  try {
+    return decodeURIComponent(candidate) || trimmed;
+  } catch {
+    return candidate || trimmed;
+  }
 }
 
 function ActionButton({
@@ -163,6 +267,11 @@ function MetricCard({ label, value }: MetricCardProps) {
   );
 }
 
+/*
+type HeroChipProps = {
+  label: string;
+};
+
 function HeroChip({ label }: HeroChipProps) {
   return (
     <View style={styles.heroChip}>
@@ -170,10 +279,11 @@ function HeroChip({ label }: HeroChipProps) {
     </View>
   );
 }
+*/
 
 export function ValidationWorkbench() {
   const [documentKind, setDocumentKind] = useState<DocumentKind>('sbg');
-  const [fileName, setFileName] = useState('scratch.sbg');
+  const [fileName, setFileName] = useState(DOCUMENT_PRESETS.sbg.sampleName);
   const [text, setText] = useState(DOCUMENT_PRESETS.sbg.sample);
   const [bridgeInfo, setBridgeInfo] = useState<BridgeInfo | null>(null);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
@@ -193,6 +303,7 @@ export function ValidationWorkbench() {
   const [isRendering, setIsRendering] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlayingAction, setIsPlayingAction] = useState(false);
+  const [mixDisplayName, setMixDisplayName] = useState<string | null>(null);
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
 
@@ -267,6 +378,13 @@ export function ValidationWorkbench() {
 
   const nativeAvailability = useMemo(() => isNativeBridgeAvailable(), []);
   const resolvedName = ensureDocumentName(fileName, documentKind);
+  const mixPathInText = useMemo(() => {
+    if (documentKind !== 'sbg') {
+      return null;
+    }
+
+    return findSafePreambleMixPath(text);
+  }, [documentKind, text]);
 
   async function refreshDocuments() {
     setDocuments(await listDocuments());
@@ -477,6 +595,7 @@ export function ValidationWorkbench() {
       setDocumentKind(nextKind);
       setFileName(loaded.name);
       setText(loaded.text);
+      setMixDisplayName(null);
       setDiagnostics([]);
       setCurveInfo(null);
       setPreviewState(null);
@@ -490,8 +609,13 @@ export function ValidationWorkbench() {
 
   function loadPreset(nextKind: DocumentKind, preset: 'sample' | 'broken') {
     setDocumentKind(nextKind);
-    setFileName(DOCUMENT_PRESETS[nextKind].sourceName);
+    setFileName(
+      preset === 'sample'
+        ? DOCUMENT_PRESETS[nextKind].sampleName
+        : DOCUMENT_PRESETS[nextKind].brokenName,
+    );
     setText(DOCUMENT_PRESETS[nextKind][preset]);
+    setMixDisplayName(null);
     setDiagnostics([]);
     setCurveInfo(null);
     setPreviewState(null);
@@ -510,11 +634,46 @@ export function ValidationWorkbench() {
 
   function handleEditorTextChange(nextText: string) {
     setText(nextText);
+    setMixDisplayName(null);
     setDiagnostics([]);
     setCurveInfo(null);
     setPreviewState(null);
     setBridgeError(null);
     setValidationState('Live validation pending...');
+  }
+
+  async function handleAddMix() {
+    if (documentKind !== 'sbg') {
+      setValidationState('Mix files can only be attached to .sbg documents.');
+      return;
+    }
+
+    try {
+      const picked = await pickMixInput();
+      if (!picked) {
+        setValidationState('Mix selection cancelled.');
+        return;
+      }
+
+      const nextText = upsertSafePreambleMixPath(text, picked.uri);
+      const replacedExistingMix = Boolean(mixPathInText);
+
+      setText(nextText);
+      setMixDisplayName(picked.displayName || null);
+      setDiagnostics([]);
+      setCurveInfo(null);
+      setPreviewState(null);
+      setBridgeError(null);
+      setValidationState(
+        `${
+          replacedExistingMix ? 'Updated' : 'Added'
+        } mix reference for ${picked.displayName || picked.uri}.`,
+      );
+    } catch (error) {
+      setBridgeError(
+        error instanceof Error ? error.message : 'Failed to pick mix file.',
+      );
+    }
   }
 
   const curveFlags = useMemo(() => {
@@ -572,6 +731,7 @@ export function ValidationWorkbench() {
                 </View>
               </View>
 
+              {/*
               <View
                 style={[
                   styles.statusPill,
@@ -591,8 +751,10 @@ export function ValidationWorkbench() {
                   {playbackState?.active ? 'Playback live' : 'Playback idle'}
                 </Text>
               </View>
+              */}
             </View>
 
+            {/*
             <Text style={styles.heroLede}>
               Validation, persistent render context, preview PCM rendering,
               Android playback, and app-local drafts in one editor-centric
@@ -614,39 +776,43 @@ export function ValidationWorkbench() {
                   : ' Native module unavailable on this runtime.'}
               </Text>
             </View>
+            */}
           </View>
 
-          <View style={styles.metricsGrid}>
-            <MetricCard
-              label="Bridge"
-              value={
-                bridgeInfo
-                  ? `v${bridgeInfo.bridgeVersion}`
-                  : nativeAvailability
-                  ? 'Loading...'
-                  : 'Unavailable'
-              }
-            />
-            <MetricCard
-              label="sbagenxlib"
-              value={bridgeInfo ? bridgeInfo.libraryVersion : 'Pending'}
-            />
-            <MetricCard
-              label="Context"
-              value={contextState?.prepared ? 'Prepared' : 'Cold'}
-            />
-            <MetricCard
-              label="Playback"
-              value={playbackState?.active ? 'Running' : 'Stopped'}
-            />
-          </View>
+          {showDeveloperTools ? (
+            <View style={styles.metricsGrid}>
+              <MetricCard
+                label="Bridge"
+                value={
+                  bridgeInfo
+                    ? `v${bridgeInfo.bridgeVersion}`
+                    : nativeAvailability
+                    ? 'Loading...'
+                    : 'Unavailable'
+                }
+              />
+              <MetricCard
+                label="sbagenxlib"
+                value={bridgeInfo ? bridgeInfo.libraryVersion : 'Pending'}
+              />
+              <MetricCard
+                label="Context"
+                value={contextState?.prepared ? 'Prepared' : 'Cold'}
+              />
+              <MetricCard
+                label="Playback"
+                value={playbackState?.active ? 'Running' : 'Stopped'}
+              />
+            </View>
+          ) : null}
 
           <View style={[styles.card, styles.cardGlass, styles.panel]}>
             <Text style={styles.panelKicker}>Document</Text>
-            <Text style={styles.panelTitle}>Editor and samples</Text>
+            <Text style={styles.panelTitle}>Editor and files</Text>
             <Text style={styles.panelSub}>
-              Switch between timing and curve documents, load samples, save
-              local drafts, and validate against the native library.
+              Switch between timing and curve examples, save files into app
+              storage, attach mix inputs, and validate against the native
+              library.
             </Text>
 
             <View style={styles.segmentRow}>
@@ -694,24 +860,24 @@ export function ValidationWorkbench() {
 
             <View style={styles.buttonRow}>
               <ActionButton
-                label="Load Valid Sample"
-                onPress={() => loadPreset(documentKind, 'sample')}
-              />
-              <ActionButton
-                label="Load Broken Sample"
-                onPress={() => loadPreset(documentKind, 'broken')}
-              />
-              <ActionButton
                 disabled={isSaving}
-                label={isSaving ? 'Saving...' : 'Save Draft'}
+                label={isSaving ? 'Saving...' : 'Save'}
                 onPress={handleSaveDocument}
               />
               <ActionButton
-                label="Refresh Drafts"
+                label="Refresh Files"
                 onPress={() => {
                   refreshDocuments().catch(() => {});
                 }}
               />
+              {documentKind === 'sbg' ? (
+                <ActionButton
+                  label={mixPathInText ? 'Change Mix' : 'Add Mix'}
+                  onPress={() => {
+                    handleAddMix().catch(() => {});
+                  }}
+                />
+              ) : null}
             </View>
 
             <Text style={styles.note}>
@@ -722,6 +888,15 @@ export function ValidationWorkbench() {
             <Text style={styles.note}>
               Inline diagnostics refresh automatically while you type.
             </Text>
+
+            {documentKind === 'sbg' && mixPathInText ? (
+              <Text style={styles.note}>
+                Mix file:{' '}
+                <Text style={styles.inlineCode}>
+                  {mixDisplayName ?? summarizeMixReference(mixPathInText)}
+                </Text>
+              </Text>
+            ) : null}
 
             <SbaGenXEditor
               diagnostics={diagnostics}
@@ -1008,16 +1183,17 @@ export function ValidationWorkbench() {
 
           <View style={[styles.card, styles.cardSoft, styles.panel]}>
             <Text style={styles.panelKicker}>Storage</Text>
-            <Text style={styles.panelTitle}>Saved drafts</Text>
+            <Text style={styles.panelTitle}>Bundled examples and drafts</Text>
             <Text style={styles.panelSub}>
-              App-local drafts are the current first document flow until Android
-              system document pickers are added.
+              Bundled examples and saved documents live in app-private storage.
+              No extra storage permission is required until we add Android
+              system document pickers.
             </Text>
 
             {documents.length === 0 ? (
               <Text style={styles.emptyState}>
-                No app-local drafts yet. Save one from the editor to make this a
-                usable first document flow.
+                No app-local documents found yet. Bundled examples should
+                appear here after the app seeds storage on first launch.
               </Text>
             ) : (
               documents.map(document => (

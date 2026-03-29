@@ -96,6 +96,11 @@ export type LoadedDocument = SavedDocumentSummary & {
   text: string;
 };
 
+export type PickedMixInput = {
+  uri: string;
+  displayName: string;
+};
+
 type NativeSbaGenXModule = {
   getBridgeInfo(): Promise<string>;
   validateSbg(text: string, sourceName?: string): Promise<string>;
@@ -110,6 +115,7 @@ type NativeSbaGenXModule = {
   listDocuments(): Promise<string>;
   saveDocument(name: string, text: string): Promise<string>;
   loadDocument(name: string): Promise<string>;
+  pickMixInput(): Promise<string>;
 };
 
 const nativeModule = NativeModules.SbaGenXModule as
@@ -228,4 +234,12 @@ export async function loadDocument(name: string): Promise<LoadedDocument> {
   return parseNativeJson<LoadedDocument>(
     requireNativeModule().loadDocument(name),
   );
+}
+
+export async function pickMixInput(): Promise<PickedMixInput | null> {
+  const picked = await parseNativeJson<PickedMixInput>(
+    requireNativeModule().pickMixInput(),
+  );
+
+  return picked.uri ? picked : null;
 }
