@@ -11,6 +11,7 @@ The repo is scaffolded as a plain React Native app and already includes:
 - a Kotlin React Native module that calls into JNI
 - a first editor workbench screen for `.sbg` and `.sbgf` text
 - real `sbx_version()`, `sbx_api_version()`, `sbx_validate_sbg_text()`, and `sbx_validate_sbgf_text()` calls
+- `.sbgf` curve metadata inspection during validation, including solve-backed parameter values after native prepare
 - a persistent native `SbxContext` for `.sbg` documents
 - preview rendering of PCM float samples from JNI without audio output
 - live Android playback for `.sbg` via `AudioTrack`
@@ -21,7 +22,7 @@ The repo is scaffolded as a plain React Native app and already includes:
 What is not implemented yet:
 
 - system document picker / external file open-save flow
-- `.sbgf` curve inspection and beat preview
+- `.sbgf` beat preview and runtime playback
 - export workflows
 - iOS native bridge parity
 
@@ -85,7 +86,7 @@ cd android
 - `saveDocument(name, text)`
 - `loadDocument(name)`
 
-The current editor workbench can validate both `.sbg` and `.sbgf`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack.
+The current editor workbench can validate both `.sbg` and `.sbgf`, inspect prepared `.sbgf` curve parameters from `sbagenxlib`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack.
 
 Bundled Android app assets now include:
 

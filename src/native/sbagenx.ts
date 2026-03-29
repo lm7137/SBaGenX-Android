@@ -12,6 +12,24 @@ export type SbaGenXDiagnostic = {
   message: string;
 };
 
+export type CurveParameter = {
+  name: string;
+  value: number;
+};
+
+export type CurveInfo = {
+  parameterCount: number;
+  hasSolve: boolean;
+  hasCarrierExpr: boolean;
+  hasAmpExpr: boolean;
+  hasMixampExpr: boolean;
+  beatPieceCount: number;
+  carrierPieceCount: number;
+  ampPieceCount: number;
+  mixampPieceCount: number;
+  parameters: CurveParameter[];
+};
+
 export type BridgeInfo = {
   bridgeVersion: string;
   libraryVersion: string;
@@ -23,6 +41,7 @@ export type ValidationResult = {
   statusText: string;
   diagnosticCount: number;
   diagnostics: SbaGenXDiagnostic[];
+  curveInfo?: CurveInfo | null;
 };
 
 export type ContextState = {

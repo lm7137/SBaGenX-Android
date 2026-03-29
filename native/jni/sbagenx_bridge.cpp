@@ -17,7 +17,18 @@ extern "C" {
 
 namespace {
 
-constexpr const char *kBridgeVersion = "0.3.0";
+constexpr const char *kBridgeVersion = "0.4.0";
+
+struct CurveParameterSnapshot {
+  std::string name;
+  double value = 0.0;
+};
+
+struct CurveInspection {
+  bool available = false;
+  SbxCurveInfo info{};
+  std::vector<CurveParameterSnapshot> parameters;
+};
 
 std::string escape_json(const std::string &input) {
   std::string out;
@@ -112,6 +123,47 @@ void append_diagnostics_json(std::ostringstream &json,
   json << ']';
 }
 
+void append_curve_parameters_json(
+    std::ostringstream &json,
+    const std::vector<CurveParameterSnapshot> &parameters) {
+  json << '[';
+
+  for (size_t index = 0; index < parameters.size(); ++index) {
+    const CurveParameterSnapshot &parameter = parameters[index];
+    if (index > 0U) {
+      json << ',';
+    }
+
+    json << '{'
+         << "\"name\":\"" << escape_json(parameter.name) << "\","
+         << "\"value\":" << parameter.value
+         << '}';
+  }
+
+  json << ']';
+}
+
+void append_curve_info_json(std::ostringstream &json,
+                            const CurveInspection &inspection) {
+  const SbxCurveInfo &info = inspection.info;
+
+  json << '{'
+       << "\"parameterCount\":" << info.parameter_count << ','
+       << "\"hasSolve\":" << (info.has_solve ? "true" : "false") << ','
+       << "\"hasCarrierExpr\":"
+       << (info.has_carrier_expr ? "true" : "false") << ','
+       << "\"hasAmpExpr\":" << (info.has_amp_expr ? "true" : "false") << ','
+       << "\"hasMixampExpr\":"
+       << (info.has_mixamp_expr ? "true" : "false") << ','
+       << "\"beatPieceCount\":" << info.beat_piece_count << ','
+       << "\"carrierPieceCount\":" << info.carrier_piece_count << ','
+       << "\"ampPieceCount\":" << info.amp_piece_count << ','
+       << "\"mixampPieceCount\":" << info.mixamp_piece_count << ','
+       << "\"parameters\":";
+  append_curve_parameters_json(json, inspection.parameters);
+  json << '}';
+}
+
 void append_float_array_json(std::ostringstream &json,
                              const float *values,
                              size_t count) {
@@ -139,6 +191,14 @@ struct ContextDeleter {
   void operator()(SbxContext *ctx) const {
     if (ctx) {
       sbx_context_destroy(ctx);
+    }
+  }
+};
+
+struct CurveDeleter {
+  void operator()(SbxCurveProgram *curve) const {
+    if (curve) {
+      sbx_curve_destroy(curve);
     }
   }
 };
@@ -664,9 +724,71 @@ std::string build_bridge_info_json() {
   return json.str();
 }
 
+bool diagnostics_have_errors(const SbxDiagnostic *diags, size_t count) {
+  for (size_t index = 0; index < count; ++index) {
+    if (diags[index].severity != SBX_DIAG_WARNING) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool inspect_curve_info(const std::string &text,
+                        const std::string &source_name,
+                        CurveInspection *out) {
+  if (!out) {
+    return false;
+  }
+
+  out->available = false;
+  out->info = SbxCurveInfo{};
+  out->parameters.clear();
+
+  std::unique_ptr<SbxCurveProgram, CurveDeleter> curve(sbx_curve_create());
+  if (!curve) {
+    return false;
+  }
+
+  SbxCurveEvalConfig cfg{};
+  sbx_default_curve_eval_config(&cfg);
+
+  if (sbx_curve_load_text(curve.get(), text.c_str(), source_name.c_str()) !=
+      SBX_OK) {
+    return false;
+  }
+
+  if (sbx_curve_prepare(curve.get(), &cfg) != SBX_OK) {
+    return false;
+  }
+
+  if (sbx_curve_get_info(curve.get(), &out->info) != SBX_OK) {
+    return false;
+  }
+
+  const size_t param_count = sbx_curve_param_count(curve.get());
+  out->parameters.reserve(param_count);
+
+  for (size_t index = 0; index < param_count; ++index) {
+    const char *name = nullptr;
+    double value = 0.0;
+    if (sbx_curve_get_param(curve.get(), index, &name, &value) != SBX_OK ||
+        !name) {
+      continue;
+    }
+
+    out->parameters.push_back(CurveParameterSnapshot{name, value});
+  }
+
+  out->available = true;
+  return true;
+}
+
 std::string build_validation_json(int status,
                                   const SbxDiagnostic *diags,
-                                  size_t count) {
+                                  size_t count,
+                                  const CurveInspection *curve_inspection =
+                                      nullptr) {
   std::ostringstream json;
 
   json << '{'
@@ -676,6 +798,12 @@ std::string build_validation_json(int status,
        << "\"diagnostics\":";
 
   append_diagnostics_json(json, diags, count);
+  json << ",\"curveInfo\":";
+  if (curve_inspection && curve_inspection->available) {
+    append_curve_info_json(json, *curve_inspection);
+  } else {
+    json << "null";
+  }
   json << '}';
 
   return json.str();
@@ -686,6 +814,8 @@ std::string validate_text(const std::string &text,
                           bool is_sbg) {
   SbxDiagnostic *diags = nullptr;
   size_t count = 0U;
+  CurveInspection curve_inspection;
+  const CurveInspection *curve_info_json = nullptr;
   const std::string safe_source =
       source_name.empty() ? (is_sbg ? "scratch.sbg" : "scratch.sbgf")
                           : source_name;
@@ -700,7 +830,13 @@ std::string validate_text(const std::string &text,
                                                   &diags,
                                                   &count);
 
-  const std::string json = build_validation_json(status, diags, count);
+  if (!is_sbg && status == SBX_OK && !diagnostics_have_errors(diags, count) &&
+      inspect_curve_info(text, safe_source, &curve_inspection)) {
+    curve_info_json = &curve_inspection;
+  }
+
+  const std::string json =
+      build_validation_json(status, diags, count, curve_info_json);
   if (diags) {
     sbx_free_diagnostics(diags);
   }

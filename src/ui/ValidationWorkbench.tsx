@@ -26,6 +26,7 @@ import {
   stopPlayback,
   type BridgeInfo,
   type ContextState,
+  type CurveInfo,
   type DocumentKind,
   type PlaybackState,
   type RenderPreviewResult,
@@ -113,6 +114,10 @@ function formatTimestamp(value: number): string {
   return new Date(value).toLocaleString();
 }
 
+function formatCurveValue(value: number): string {
+  return Math.abs(value) >= 10 ? value.toFixed(3) : value.toFixed(4);
+}
+
 function ActionButton({
   disabled = false,
   label,
@@ -177,6 +182,7 @@ export function ValidationWorkbench() {
     'Bridge ready check pending.',
   );
   const [diagnostics, setDiagnostics] = useState<SbaGenXDiagnostic[]>([]);
+  const [curveInfo, setCurveInfo] = useState<CurveInfo | null>(null);
   const [contextState, setContextState] = useState<ContextState | null>(null);
   const [previewState, setPreviewState] = useState<RenderPreviewResult | null>(
     null,
@@ -292,6 +298,7 @@ export function ValidationWorkbench() {
       }
 
       setDiagnostics(result.diagnostics);
+      setCurveInfo(result.curveInfo ?? null);
       setBridgeError(null);
 
       if (result.status !== 0) {
@@ -320,6 +327,7 @@ export function ValidationWorkbench() {
 
       const message =
         error instanceof Error ? error.message : 'Unknown validation error.';
+      setCurveInfo(null);
       setBridgeError(message);
       setValidationState(
         mode === 'live'
@@ -494,6 +502,7 @@ export function ValidationWorkbench() {
       setFileName(loaded.name);
       setText(loaded.text);
       setDiagnostics([]);
+      setCurveInfo(null);
       setPreviewState(null);
       setValidationState(`Loaded ${loaded.name} from app-local storage.`);
     } catch (error) {
@@ -508,6 +517,7 @@ export function ValidationWorkbench() {
     setFileName(DOCUMENT_PRESETS[nextKind].sourceName);
     setText(DOCUMENT_PRESETS[nextKind][preset]);
     setDiagnostics([]);
+    setCurveInfo(null);
     setPreviewState(null);
     setValidationState(
       preset === 'sample'
@@ -525,10 +535,24 @@ export function ValidationWorkbench() {
   function handleEditorTextChange(nextText: string) {
     setText(nextText);
     setDiagnostics([]);
+    setCurveInfo(null);
     setPreviewState(null);
     setBridgeError(null);
     setValidationState('Live validation pending...');
   }
+
+  const curveFlags = useMemo(() => {
+    if (!curveInfo) {
+      return [];
+    }
+
+    return [
+      curveInfo.hasSolve && 'solve',
+      curveInfo.hasCarrierExpr && 'carrier',
+      curveInfo.hasAmpExpr && 'amp',
+      curveInfo.hasMixampExpr && 'mixamp',
+    ].filter(Boolean) as string[];
+  }, [curveInfo]);
 
   useEffect(() => {
     if (!nativeAvailability) {
@@ -857,6 +881,83 @@ export function ValidationWorkbench() {
                 <Text style={styles.errorTitle}>Bridge Error</Text>
                 <Text style={styles.errorBody}>{bridgeError}</Text>
               </View>
+            ) : null}
+
+            {documentKind === 'sbgf' ? (
+              curveInfo ? (
+                <View
+                  style={[
+                    styles.card,
+                    styles.innerGlassCard,
+                    styles.curveInfoCard,
+                  ]}
+                >
+                  <Text style={styles.innerCardTitle}>Curve Info</Text>
+                  <Text style={styles.innerCardMeta}>
+                    Prepared directly by{' '}
+                    <Text style={styles.inlineCode}>sbagenxlib</Text>. Solve
+                    values appear in the parameter list once the curve validates
+                    cleanly.
+                  </Text>
+
+                  <View style={styles.curveInfoStats}>
+                    <View style={styles.curveInfoStat}>
+                      <Text style={styles.curveInfoStatLabel}>Parameters</Text>
+                      <Text style={styles.curveInfoStatValue}>
+                        {curveInfo.parameterCount}
+                      </Text>
+                    </View>
+                    <View style={styles.curveInfoStat}>
+                      <Text style={styles.curveInfoStatLabel}>Beat pieces</Text>
+                      <Text style={styles.curveInfoStatValue}>
+                        {curveInfo.beatPieceCount}
+                      </Text>
+                    </View>
+                    <View style={styles.curveInfoStat}>
+                      <Text style={styles.curveInfoStatLabel}>
+                        Carrier pieces
+                      </Text>
+                      <Text style={styles.curveInfoStatValue}>
+                        {curveInfo.carrierPieceCount}
+                      </Text>
+                    </View>
+                    <View style={styles.curveInfoStat}>
+                      <Text style={styles.curveInfoStatLabel}>Flags</Text>
+                      <Text style={styles.curveInfoStatValue}>
+                        {curveFlags.length ? curveFlags.join(', ') : 'none'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {curveInfo.parameters.length > 0 ? (
+                    <View style={styles.curveParamList}>
+                      {curveInfo.parameters.map(parameter => (
+                        <View
+                          key={parameter.name}
+                          style={styles.curveParamRow}
+                        >
+                          <Text style={styles.curveParamName}>
+                            {parameter.name}
+                          </Text>
+                          <Text style={styles.curveParamValue}>
+                            {formatCurveValue(parameter.value)}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : (
+                    <Text style={styles.emptyState}>
+                      No explicit parameters declared in this curve.
+                    </Text>
+                  )}
+                </View>
+              ) : (
+                <Text style={styles.emptyState}>
+                  Curve metadata appears here once the active{' '}
+                  <Text style={styles.inlineCode}>.sbgf</Text> validates
+                  cleanly.
+                </Text>
+              )
             ) : null}
 
             {diagnostics.length === 0 ? (
@@ -1299,6 +1400,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
+  curveInfoCard: {
+    marginBottom: 12,
+  },
   innerCardTitle: {
     color: '#141414',
     fontSize: 16,
@@ -1309,6 +1413,60 @@ const styles = StyleSheet.create({
     color: 'rgba(20, 20, 20, 0.68)',
     fontSize: 13,
     marginBottom: 10,
+  },
+  curveInfoStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 12,
+  },
+  curveInfoStat: {
+    backgroundColor: 'rgba(255, 255, 255, 0.58)',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+    borderRadius: 14,
+    borderWidth: 1,
+    minWidth: 108,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  curveInfoStatLabel: {
+    color: 'rgba(20, 20, 20, 0.66)',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  curveInfoStatValue: {
+    color: '#141414',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  curveParamList: {
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  curveParamRow: {
+    backgroundColor: 'rgba(255, 255, 255, 0.5)',
+    borderBottomColor: 'rgba(0, 0, 0, 0.08)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  curveParamName: {
+    color: '#141414',
+    fontFamily: 'monospace',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  curveParamValue: {
+    color: 'rgba(20, 20, 20, 0.82)',
+    fontFamily: 'monospace',
+    fontSize: 13,
   },
   codeBlock: {
     backgroundColor: 'rgba(255, 255, 255, 0.72)',

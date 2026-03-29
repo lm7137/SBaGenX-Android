@@ -11,6 +11,7 @@ The current bridge proves the minimum useful path:
 - JNI
 - vendored `sbagenxlib`
 - structured validation diagnostics returned to JS
+- `.sbgf` curve-info metadata returned to JS after native prepare
 - a persistent native `SbxContext` for `.sbg`
 - preview PCM rendering from JNI
 - live Android playback via `AudioTrack`
@@ -18,7 +19,7 @@ The current bridge proves the minimum useful path:
 - Android-side mix-source resolution and decode for `.sbg` `-m` inputs
 - app-local draft persistence through the React Native module
 
-The current vendored snapshot is taken from the `SBaGenX` repo's `gui-v3.0` branch at commit `5088272e38b11a762ec6e411a833f948db6f741e`.
+The current vendored snapshot matches the local `SBaGenX` repo's current `sbagenxlib` files. For upstream reference, prefer the `main` branch there.
 
 ## Current native surface
 
@@ -49,7 +50,7 @@ The JNI layer now owns a process-local runtime wrapper around `SbxContext`.
 - playback reuses the same context model and pulls PCM into an Android `AudioTrack`
 - the JS layer polls context and playback state rather than duplicating render logic
 
-At the moment, `.sbgf` support is validation-only. Playback and preview are intentionally limited to `.sbg` until the runtime surface for curves and beat generation is defined.
+At the moment, `.sbgf` support includes validation plus curve-info inspection. Playback and preview are still intentionally limited to `.sbg` until the runtime surface for curves and beat generation is defined.
 
 Current mix-input rules:
 
@@ -86,5 +87,5 @@ The repo has now moved one step further by proving persistent context lifetime, 
 
 1. Replace app-local draft storage with Android Storage Access Framework document open/save.
 2. Add waveform or transport-oriented playback UI around the current `AudioTrack` backend.
-3. Add optional `.sbgf` beat-preview and curve-inspection calls.
+3. Add optional `.sbgf` beat-preview and runtime playback calls.
 4. Evaluate whether the playback backend should remain `AudioTrack` or move to AAudio/Oboe for lower-latency control.

@@ -185,19 +185,28 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
 
   private fun drawGutter(canvas: Canvas) {
     val layout = layout ?: return
+    val content = text ?: return
+    val lineStarts = buildLineStarts(content)
     canvas.drawRect(0f, 0f, gutterWidthPx, height.toFloat(), gutterPaint)
     canvas.drawLine(gutterWidthPx, 0f, gutterWidthPx, height.toFloat(), gutterDividerPaint)
 
     val firstVisibleLine = layout.getLineForVertical(scrollY)
     val lastVisibleLine = layout.getLineForVertical(scrollY + height)
-    val activeLine = layout.getLineForOffset(max(selectionStart, 0))
+    val activeLogicalLine = logicalLineNumberAtOffset(lineStarts, max(selectionStart, 0))
     val textRight = gutterWidthPx - lineNumberInsetPx
 
     for (lineIndex in firstVisibleLine..lastVisibleLine) {
+      val lineStartOffset = layout.getLineStart(lineIndex).coerceIn(0, content.length)
+      if (!isDocumentLineStart(content, lineStartOffset)) {
+        continue
+      }
+
+      val logicalLine = logicalLineNumberAtOffset(lineStarts, lineStartOffset)
       val baseline =
           layout.getLineBaseline(lineIndex).toFloat() + totalPaddingTop - scrollY
-      val paint = if (lineIndex == activeLine) activeLineNumberPaint else lineNumberPaint
-      canvas.drawText((lineIndex + 1).toString(), textRight, baseline, paint)
+      val paint =
+          if (logicalLine == activeLogicalLine) activeLineNumberPaint else lineNumberPaint
+      canvas.drawText(logicalLine.toString(), textRight, baseline, paint)
     }
   }
 
@@ -258,6 +267,31 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
     }
 
     return starts.toIntArray()
+  }
+
+  private fun isDocumentLineStart(text: CharSequence, offset: Int): Boolean {
+    return offset <= 0 || text[offset - 1] == '\n'
+  }
+
+  private fun logicalLineNumberAtOffset(lineStarts: IntArray, offset: Int): Int {
+    if (lineStarts.isEmpty()) {
+      return 1
+    }
+
+    var low = 0
+    var high = lineStarts.size - 1
+    var bestIndex = 0
+    while (low <= high) {
+      val mid = (low + high).ushr(1)
+      if (lineStarts[mid] <= offset) {
+        bestIndex = mid
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+
+    return bestIndex + 1
   }
 
   private fun positionToOffset(
