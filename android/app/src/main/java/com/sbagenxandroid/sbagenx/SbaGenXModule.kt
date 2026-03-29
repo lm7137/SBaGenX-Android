@@ -132,9 +132,15 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun startPlayback(text: String, sourceName: String?, promise: Promise) {
-    resolveNativeCall(promise) {
-      playbackController.start(text, sourceName ?: "scratch.sbg")
-    }
+    Thread(
+            {
+              resolveNativeCall(promise) {
+                playbackController.start(text, sourceName ?: "scratch.sbg")
+              }
+            },
+            "sbagenx-start-playback",
+        )
+        .start()
   }
 
   @ReactMethod

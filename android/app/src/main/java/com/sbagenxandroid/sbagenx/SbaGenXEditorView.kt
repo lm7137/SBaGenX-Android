@@ -180,7 +180,7 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
 
   override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
     super.onScrollChanged(l, t, oldl, oldt)
-    invalidate()
+    postInvalidateOnAnimation()
   }
 
   override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -198,9 +198,9 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
     val layout = layout ?: return
     val selection = max(selectionStart, 0)
     val currentLine = layout.getLineForOffset(selection)
-    val highlightTop = layout.getLineTop(currentLine).toFloat() + totalPaddingTop - scrollY
-    val highlightBottom =
-        layout.getLineBottom(currentLine).toFloat() + totalPaddingTop - scrollY
+    val contentTop = totalPaddingTop.toFloat()
+    val highlightTop = layout.getLineTop(currentLine).toFloat() + contentTop
+    val highlightBottom = layout.getLineBottom(currentLine).toFloat() + contentTop
     canvas.drawRect(gutterWidthPx, highlightTop, width.toFloat(), highlightBottom, currentLinePaint)
   }
 
@@ -208,11 +208,18 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
     val layout = layout ?: return
     val content = text ?: return
     val lineStarts = buildLineStarts(content)
-    canvas.drawRect(0f, 0f, gutterWidthPx, height.toFloat(), gutterPaint)
-    canvas.drawLine(gutterWidthPx, 0f, gutterWidthPx, height.toFloat(), gutterDividerPaint)
+    val clipBounds = canvas.clipBounds
+    val clipTop = clipBounds.top.toFloat()
+    val clipBottom = clipBounds.bottom.toFloat()
+    val contentTop = totalPaddingTop.toFloat()
 
-    val firstVisibleLine = layout.getLineForVertical(scrollY)
-    val lastVisibleLine = layout.getLineForVertical(scrollY + height)
+    canvas.drawRect(0f, clipTop, gutterWidthPx, clipBottom, gutterPaint)
+    canvas.drawLine(gutterWidthPx, clipTop, gutterWidthPx, clipBottom, gutterDividerPaint)
+
+    val visibleLayoutTop = max(0, clipBounds.top - totalPaddingTop)
+    val visibleLayoutBottom = max(visibleLayoutTop, clipBounds.bottom - totalPaddingTop)
+    val firstVisibleLine = layout.getLineForVertical(visibleLayoutTop)
+    val lastVisibleLine = layout.getLineForVertical(visibleLayoutBottom)
     val activeLogicalLine = logicalLineNumberAtOffset(lineStarts, max(selectionStart, 0))
     val textRight = gutterWidthPx - lineNumberInsetPx
 
@@ -223,8 +230,13 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
       }
 
       val logicalLine = logicalLineNumberAtOffset(lineStarts, lineStartOffset)
-      val baseline =
-          layout.getLineBaseline(lineIndex).toFloat() + totalPaddingTop - scrollY
+      val lineTop = layout.getLineTop(lineIndex).toFloat() + contentTop
+      val lineBottom = layout.getLineBottom(lineIndex).toFloat() + contentTop
+      if (lineBottom < clipTop || lineTop > clipBottom) {
+        continue
+      }
+
+      val baseline = layout.getLineBaseline(lineIndex).toFloat() + contentTop
       val paint =
           if (logicalLine == activeLogicalLine) activeLineNumberPaint else lineNumberPaint
       canvas.drawText(logicalLine.toString(), textRight, baseline, paint)

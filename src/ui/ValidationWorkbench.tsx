@@ -168,25 +168,64 @@ function formatCurveValue(value: number): string {
   return Math.abs(value) >= 10 ? value.toFixed(3) : value.toFixed(4);
 }
 
-function findSafePreambleMixPath(text: string): string | null {
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const safeIndex = lines.findIndex(line => line.trim() === '-SE');
-  if (safeIndex < 0) {
-    return null;
-  }
+function isPreambleCommentOrBlank(line: string): boolean {
+  const trimmed = line.trim();
+  return !trimmed || trimmed.startsWith('#');
+}
 
-  for (let index = safeIndex + 1; index < lines.length; index += 1) {
+function findOptionBlockRange(lines: string[]): { start: number; end: number } | null {
+  let start = -1;
+
+  for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index].trim();
-    if (!trimmed) {
+    if (isPreambleCommentOrBlank(lines[index])) {
       continue;
     }
 
-    if (trimmed.startsWith('-m ')) {
-      return trimmed.slice(3).trim() || null;
+    if (!trimmed.startsWith('-')) {
+      return null;
     }
 
+    start = index;
+    break;
+  }
+
+  if (start < 0) {
+    return null;
+  }
+
+  let end = start;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (!trimmed) {
+      end = index;
+      continue;
+    }
     if (!trimmed.startsWith('-')) {
       break;
+    }
+    end = index;
+  }
+
+  return { start, end };
+}
+
+function extractMixPathFromOptionLine(line: string): string | null {
+  const match = /(?:^|\s)-m\s+(\S+)/u.exec(line);
+  return match?.[1] ?? null;
+}
+
+function findSafePreambleMixPath(text: string): string | null {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const optionBlock = findOptionBlockRange(lines);
+  if (!optionBlock) {
+    return null;
+  }
+
+  for (let index = optionBlock.start; index <= optionBlock.end; index += 1) {
+    const mixPath = extractMixPathFromOptionLine(lines[index]);
+    if (mixPath) {
+      return mixPath;
     }
   }
 
@@ -196,33 +235,23 @@ function findSafePreambleMixPath(text: string): string | null {
 function upsertSafePreambleMixPath(text: string, mixPath: string): string {
   const normalizedText = text.replace(/\r\n/g, '\n');
   const lines = normalizedText.split('\n');
-  const safeIndex = lines.findIndex(line => line.trim() === '-SE');
+  const optionBlock = findOptionBlockRange(lines);
 
-  if (safeIndex < 0) {
+  if (!optionBlock) {
     return ['-SE', `-m ${mixPath}`, '', normalizedText].join('\n');
   }
 
-  let insertIndex = safeIndex + 1;
-  for (let index = safeIndex + 1; index < lines.length; index += 1) {
-    const trimmed = lines[index].trim();
-    if (!trimmed) {
-      insertIndex = index + 1;
-      continue;
-    }
-
-    if (trimmed.startsWith('-m ')) {
-      lines[index] = `-m ${mixPath}`;
+  for (let index = optionBlock.start; index <= optionBlock.end; index += 1) {
+    if (extractMixPathFromOptionLine(lines[index])) {
+      lines[index] = lines[index].replace(
+        /(^|\s)-m\s+\S+/u,
+        match => match.replace(/-m\s+\S+/u, `-m ${mixPath}`),
+      );
       return lines.join('\n');
     }
-
-    if (!trimmed.startsWith('-')) {
-      break;
-    }
-
-    insertIndex = index + 1;
   }
 
-  lines.splice(insertIndex, 0, `-m ${mixPath}`);
+  lines.splice(optionBlock.end + 1, 0, `-m ${mixPath}`);
   return lines.join('\n');
 }
 

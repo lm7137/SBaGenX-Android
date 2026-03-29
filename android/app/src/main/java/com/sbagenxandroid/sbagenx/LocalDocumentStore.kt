@@ -35,13 +35,13 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
   private val documentsDir = File(reactContext.filesDir, "documents").apply {
     mkdirs()
   }
+  private val librarySeedLock = Any()
+
+  @Volatile private var librarySeedGeneration = 0L
 
   init {
     seedBundledExamplesToSandbox()
-    getLibraryRoot()?.let { root ->
-      seedBundledExamplesToLibrary(root)
-      seedBundledMixesToLibrary(root)
-    }
+    queueLibrarySeed()
   }
 
   fun getStoreInfo(): String {
@@ -68,8 +68,7 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
 
     val root = getLibraryRoot()
     require(root != null) { "Unable to access the selected library folder." }
-    seedBundledExamplesToLibrary(root)
-    seedBundledMixesToLibrary(root)
+    queueLibrarySeed()
     return getStoreInfo()
   }
 
@@ -347,6 +346,33 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
     listOf("river1.ogg", "river2.ogg").forEach { assetPath ->
       copyAssetTreeToLibrary(root, assetPath)
     }
+  }
+
+  private fun queueLibrarySeed() {
+    val generation =
+        synchronized(librarySeedLock) {
+          librarySeedGeneration += 1
+          librarySeedGeneration
+        }
+
+    Thread(
+            {
+              synchronized(librarySeedLock) {
+                if (generation != librarySeedGeneration) {
+                  return@synchronized
+                }
+
+                val root = getLibraryRoot() ?: return@synchronized
+                try {
+                  seedBundledExamplesToLibrary(root)
+                  seedBundledMixesToLibrary(root)
+                } catch (_: Throwable) {
+                }
+              }
+            },
+            "sbagenx-library-seed",
+        )
+        .start()
   }
 
   private fun copyAssetTreeToLibrary(root: DocumentFile, assetPath: String) {

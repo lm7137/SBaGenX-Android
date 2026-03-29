@@ -12,6 +12,7 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
 
   @Volatile private var isPlaying = false
   @Volatile private var lastError: String? = null
+  @Volatile private var startGeneration: Long = 0
 
   private var audioTrack: AudioTrack? = null
   private var playbackThread: Thread? = null
@@ -21,10 +22,22 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
   fun start(text: String, sourceName: String): String {
     stopInternal(join = true)
 
+    val startToken =
+        synchronized(lock) {
+          startGeneration += 1
+          activeSourceName = sourceName
+          lastError = null
+          bufferFrames = 0
+          startGeneration
+        }
+
     val prepState = JSONObject(runtimeLoader.prepare(text, sourceName))
+    if (isStartCancelled(startToken)) {
+      return getStateJson()
+    }
+
     if (prepState.optInt("status", -1) != 0 || !prepState.optBoolean("prepared", false)) {
       synchronized(lock) {
-        activeSourceName = sourceName
         lastError = prepState.optString("error").takeIf { it.isNotBlank() }
       }
       return buildStateJson(prepState)
@@ -73,6 +86,11 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
     }
 
     val resolvedBufferFrames = max(256, targetBufferBytes / frameSizeBytes)
+    if (isStartCancelled(startToken)) {
+      releaseTrack(track)
+      return getStateJson()
+    }
+
     val worker =
         Thread({
           Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -81,7 +99,7 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
           try {
             track.play()
 
-            while (isPlaying) {
+            while (shouldContinuePlayback(startToken)) {
               val renderStatus =
                   SbagenxBridge.nativeRenderIntoBuffer(audioBuffer, resolvedBufferFrames)
               if (renderStatus != 0) {
@@ -90,7 +108,7 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
               }
 
               var writtenValues = 0
-              while (writtenValues < audioBuffer.size && isPlaying) {
+              while (writtenValues < audioBuffer.size && shouldContinuePlayback(startToken)) {
                 val written =
                     track.write(
                         audioBuffer,
@@ -108,7 +126,11 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
           } catch (error: Throwable) {
             lastError = error.message ?: "Unexpected playback error."
           } finally {
-            isPlaying = false
+            synchronized(lock) {
+              if (startGeneration == startToken) {
+                isPlaying = false
+              }
+            }
             releaseTrack(track)
             synchronized(lock) {
               if (audioTrack === track) {
@@ -122,7 +144,6 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
         }, "sbagenx-playback")
 
     synchronized(lock) {
-      activeSourceName = sourceName
       lastError = null
       bufferFrames = resolvedBufferFrames
       audioTrack = track
@@ -146,6 +167,7 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
     val trackToPause: AudioTrack?
 
     synchronized(lock) {
+      startGeneration += 1
       isPlaying = false
       threadToJoin = playbackThread
       trackToPause = audioTrack
@@ -153,10 +175,20 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
 
     trackToPause?.pause()
     trackToPause?.flush()
+    try {
+      trackToPause?.stop()
+    } catch (_: Throwable) {
+    }
 
     if (join && threadToJoin != null && threadToJoin !== Thread.currentThread()) {
       threadToJoin.join(1500)
     }
+  }
+
+  private fun isStartCancelled(startToken: Long): Boolean = startGeneration != startToken
+
+  private fun shouldContinuePlayback(startToken: Long): Boolean {
+    return isPlaying && startGeneration == startToken
   }
 
   private fun releaseTrack(track: AudioTrack) {
