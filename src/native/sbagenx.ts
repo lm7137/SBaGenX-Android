@@ -90,10 +90,18 @@ export type SavedDocumentSummary = {
   name: string;
   sizeBytes: number;
   modifiedAtMs: number;
+  sourceName?: string;
 };
 
 export type LoadedDocument = SavedDocumentSummary & {
   text: string;
+};
+
+export type DocumentStoreInfo = {
+  mode: 'sandbox' | 'library';
+  label: string;
+  treeUri: string;
+  portableDocumentStorage: boolean;
 };
 
 export type PickedMixInput = {
@@ -113,8 +121,10 @@ type NativeSbaGenXModule = {
   stopPlayback(): Promise<string>;
   getPlaybackState(): Promise<string>;
   listDocuments(): Promise<string>;
+  getDocumentStoreInfo(): Promise<string>;
   saveDocument(name: string, text: string): Promise<string>;
   loadDocument(name: string): Promise<string>;
+  pickLibraryFolder(): Promise<string>;
   pickMixInput(): Promise<string>;
 };
 
@@ -221,6 +231,12 @@ export async function listDocuments(): Promise<SavedDocumentSummary[]> {
   );
 }
 
+export async function getDocumentStoreInfo(): Promise<DocumentStoreInfo> {
+  return parseNativeJson<DocumentStoreInfo>(
+    requireNativeModule().getDocumentStoreInfo(),
+  );
+}
+
 export async function saveDocument(
   name: string,
   text: string,
@@ -233,6 +249,12 @@ export async function saveDocument(
 export async function loadDocument(name: string): Promise<LoadedDocument> {
   return parseNativeJson<LoadedDocument>(
     requireNativeModule().loadDocument(name),
+  );
+}
+
+export async function pickLibraryFolder(): Promise<DocumentStoreInfo> {
+  return parseNativeJson<DocumentStoreInfo>(
+    requireNativeModule().pickLibraryFolder(),
   );
 }
 

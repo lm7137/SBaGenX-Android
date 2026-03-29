@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,22 +14,25 @@ import {
   ensureDocumentName,
   getBridgeInfo,
   getContextState,
+  getDocumentStoreInfo,
   getPlaybackState,
   inferDocumentKind,
   isNativeBridgeAvailable,
   listDocuments,
   loadDocument,
+  pickLibraryFolder,
   pickMixInput,
   prepareSbgContext,
   renderPreview,
   saveDocument,
   startPlayback,
   stopPlayback,
-  type BridgeInfo,
-  type ContextState,
-  type CurveInfo,
-  type DocumentKind,
-  type PlaybackState,
+    type BridgeInfo,
+    type ContextState,
+    type CurveInfo,
+    type DocumentStoreInfo,
+    type DocumentKind,
+    type PlaybackState,
   type RenderPreviewResult,
   type SavedDocumentSummary,
   type SbaGenXDiagnostic,
@@ -122,6 +126,23 @@ type MetricCardProps = {
   label: string;
   value: string;
 };
+
+type DocumentBrowserDirectoryEntry = {
+  kind: 'directory';
+  name: string;
+  path: string;
+};
+
+type DocumentBrowserFileEntry = {
+  kind: 'file';
+  name: string;
+  path: string;
+  document: SavedDocumentSummary;
+};
+
+type DocumentBrowserEntry =
+  | DocumentBrowserDirectoryEntry
+  | DocumentBrowserFileEntry;
 
 function formatSpan(diagnostic: SbaGenXDiagnostic): string {
   return `${diagnostic.line}:${diagnostic.column} -> ${diagnostic.endLine}:${diagnostic.endColumn}`;
@@ -221,6 +242,73 @@ function summarizeMixReference(mixPath: string): string {
   }
 }
 
+function parentDocumentDirectory(path: string): string | null {
+  if (!path) {
+    return null;
+  }
+
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length <= 1) {
+    return '';
+  }
+
+  return segments.slice(0, -1).join('/');
+}
+
+function listDocumentBrowserEntries(
+  documents: SavedDocumentSummary[],
+  directoryPath: string,
+): DocumentBrowserEntry[] {
+  const normalizedDirectory = directoryPath.trim().replace(/^\/+|\/+$/g, '');
+  const prefix = normalizedDirectory ? `${normalizedDirectory}/` : '';
+  const directories = new Map<string, DocumentBrowserDirectoryEntry>();
+  const files: DocumentBrowserFileEntry[] = [];
+
+  documents.forEach(document => {
+    if (prefix && !document.name.startsWith(prefix)) {
+      return;
+    }
+
+    const remainder = prefix
+      ? document.name.slice(prefix.length)
+      : document.name;
+
+    if (!remainder) {
+      return;
+    }
+
+    const slashIndex = remainder.indexOf('/');
+    if (slashIndex >= 0) {
+      const directoryName = remainder.slice(0, slashIndex);
+      const path = prefix ? `${normalizedDirectory}/${directoryName}` : directoryName;
+      directories.set(directoryName, {
+        kind: 'directory',
+        name: directoryName,
+        path,
+      });
+      return;
+    }
+
+    files.push({
+      kind: 'file',
+      name: remainder,
+      path: document.name,
+      document,
+    });
+  });
+
+  const compareNames = (left: { name: string }, right: { name: string }) =>
+    left.name.localeCompare(right.name, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+
+  return [
+    ...Array.from(directories.values()).sort(compareNames),
+    ...files.sort(compareNames),
+  ];
+}
+
 function ActionButton({
   disabled = false,
   label,
@@ -300,10 +388,17 @@ export function ValidationWorkbench() {
     null,
   );
   const [documents, setDocuments] = useState<SavedDocumentSummary[]>([]);
+  const [documentStoreInfo, setDocumentStoreInfo] =
+    useState<DocumentStoreInfo | null>(null);
+  const [documentSourceName, setDocumentSourceName] = useState<string | null>(
+    null,
+  );
   const [isRendering, setIsRendering] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlayingAction, setIsPlayingAction] = useState(false);
   const [mixDisplayName, setMixDisplayName] = useState<string | null>(null);
+  const [isLoadBrowserVisible, setIsLoadBrowserVisible] = useState(false);
+  const [loadBrowserPath, setLoadBrowserPath] = useState('');
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
 
@@ -341,10 +436,11 @@ export function ValidationWorkbench() {
 
     async function refreshNonValidationState() {
       try {
-        const [docs, playback, context] = await Promise.all([
+        const [docs, playback, context, storeInfo] = await Promise.all([
           listDocuments(),
           getPlaybackState(),
           getContextState(),
+          getDocumentStoreInfo(),
         ]);
 
         if (cancelled) {
@@ -354,6 +450,7 @@ export function ValidationWorkbench() {
         setDocuments(docs);
         setPlaybackState(playback);
         setContextState(context);
+        setDocumentStoreInfo(storeInfo);
       } catch (error) {
         if (!cancelled) {
           const message =
@@ -385,9 +482,41 @@ export function ValidationWorkbench() {
 
     return findSafePreambleMixPath(text);
   }, [documentKind, text]);
+  const loadBrowserEntries = useMemo(
+    () => listDocumentBrowserEntries(documents, loadBrowserPath),
+    [documents, loadBrowserPath],
+  );
+  const loadBrowserParentPath = useMemo(
+    () => parentDocumentDirectory(loadBrowserPath),
+    [loadBrowserPath],
+  );
+  const loadBrowserSegments = useMemo(
+    () => loadBrowserPath.split('/').filter(Boolean),
+    [loadBrowserPath],
+  );
+  const documentStoreLabel = documentStoreInfo?.label ?? 'App sandbox';
+  const isUsingLibraryFolder = documentStoreInfo?.mode === 'library';
 
   async function refreshDocuments() {
     setDocuments(await listDocuments());
+  }
+
+  const effectiveSourceName = documentSourceName ?? resolvedName;
+
+  async function handleRefreshFiles() {
+    try {
+      const [docs, storeInfo] = await Promise.all([
+        listDocuments(),
+        getDocumentStoreInfo(),
+      ]);
+      setDocuments(docs);
+      setDocumentStoreInfo(storeInfo);
+      setValidationState('Refreshed file list.');
+    } catch (error) {
+      setBridgeError(
+        error instanceof Error ? error.message : 'Failed to refresh file list.',
+      );
+    }
   }
 
   async function runValidationFor(
@@ -453,7 +582,7 @@ export function ValidationWorkbench() {
     setIsPreparing(true);
 
     try {
-      const nextContext = await prepareSbgContext(text, resolvedName);
+      const nextContext = await prepareSbgContext(text, effectiveSourceName);
       setContextState(nextContext);
       setPreviewState(null);
       setBridgeError(nextContext.error || null);
@@ -536,7 +665,7 @@ export function ValidationWorkbench() {
     setIsPlayingAction(true);
 
     try {
-      const nextState = await startPlayback(text, resolvedName);
+      const nextState = await startPlayback(text, effectiveSourceName);
       setPlaybackState(nextState);
       setBridgeError(nextState.lastError || null);
       setValidationState(
@@ -577,8 +706,15 @@ export function ValidationWorkbench() {
     try {
       const saved = await saveDocument(resolvedName, text);
       setFileName(saved.name);
+      setDocumentSourceName(saved.sourceName ?? saved.name);
       await refreshDocuments();
-      setValidationState(`Saved ${saved.name} to app-local storage.`);
+      setValidationState(
+        `Saved ${saved.name} to ${
+          documentStoreInfo?.mode === 'library'
+            ? documentStoreInfo.label
+            : 'app sandbox'
+        }.`,
+      );
     } catch (error) {
       setBridgeError(
         error instanceof Error ? error.message : 'Failed to save document.',
@@ -594,12 +730,13 @@ export function ValidationWorkbench() {
       const nextKind = inferDocumentKind(loaded.name);
       setDocumentKind(nextKind);
       setFileName(loaded.name);
+      setDocumentSourceName(loaded.sourceName ?? loaded.name);
       setText(loaded.text);
       setMixDisplayName(null);
       setDiagnostics([]);
       setCurveInfo(null);
       setPreviewState(null);
-      setValidationState(`Loaded ${loaded.name} from app-local storage.`);
+      setValidationState(`Loaded ${loaded.name}.`);
     } catch (error) {
       setBridgeError(
         error instanceof Error ? error.message : 'Failed to load document.',
@@ -607,13 +744,60 @@ export function ValidationWorkbench() {
     }
   }
 
-  function loadPreset(nextKind: DocumentKind, preset: 'sample' | 'broken') {
-    setDocumentKind(nextKind);
-    setFileName(
+  async function handleOpenLoadBrowser() {
+    try {
+      const [docs, storeInfo] = await Promise.all([
+        listDocuments(),
+        getDocumentStoreInfo(),
+      ]);
+      setDocuments(docs);
+      setDocumentStoreInfo(storeInfo);
+      setLoadBrowserPath('');
+      setIsLoadBrowserVisible(true);
+    } catch (error) {
+      setBridgeError(
+        error instanceof Error ? error.message : 'Failed to open file browser.',
+      );
+    }
+  }
+
+  async function handleLoadFromBrowser(name: string) {
+    setIsLoadBrowserVisible(false);
+    setLoadBrowserPath('');
+    await handleLoadDocument(name);
+  }
+
+  async function handlePickLibraryFolder() {
+    try {
+      const storeInfo = await pickLibraryFolder();
+      setDocumentStoreInfo(storeInfo);
+      await refreshDocuments();
+      setValidationState(
+        storeInfo.mode === 'library'
+          ? `Using ${storeInfo.label} for saved documents.`
+          : 'Continuing to use the app sandbox for documents.',
+      );
+    } catch (error) {
+      setBridgeError(
+        error instanceof Error ? error.message : 'Failed to choose library folder.',
+      );
+    }
+  }
+
+  async function loadPreset(nextKind: DocumentKind, preset: 'sample' | 'broken') {
+    const targetName =
       preset === 'sample'
         ? DOCUMENT_PRESETS[nextKind].sampleName
-        : DOCUMENT_PRESETS[nextKind].brokenName,
-    );
+        : DOCUMENT_PRESETS[nextKind].brokenName;
+
+    if (preset === 'sample' && documents.some(document => document.name === targetName)) {
+      await handleLoadDocument(targetName);
+      return;
+    }
+
+    setDocumentKind(nextKind);
+    setFileName(targetName);
+    setDocumentSourceName(null);
     setText(DOCUMENT_PRESETS[nextKind][preset]);
     setMixDisplayName(null);
     setDiagnostics([]);
@@ -695,13 +879,13 @@ export function ValidationWorkbench() {
     }
 
     const timeoutId = setTimeout(() => {
-      runValidationFor(documentKind, text, resolvedName).catch(() => {});
+      runValidationFor(documentKind, text, effectiveSourceName).catch(() => {});
     }, 180);
 
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [documentKind, nativeAvailability, resolvedName, text]);
+  }, [documentKind, effectiveSourceName, nativeAvailability, text]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -709,6 +893,7 @@ export function ValidationWorkbench() {
         <WebsiteBackdrop />
 
         <ScrollView
+          nestedScrollEnabled
           style={styles.scrollView}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
@@ -806,18 +991,55 @@ export function ValidationWorkbench() {
             </View>
           ) : null}
 
+          {!isUsingLibraryFolder ? (
+            <View style={[styles.card, styles.cardSoft, styles.panel]}>
+              <Text style={styles.panelKicker}>Storage</Text>
+              <Text style={styles.panelTitle}>Choose a document library</Text>
+              <Text style={styles.panelSub}>
+                Pick a folder once and the app will use it for saved documents.
+                Bundled examples are copied there automatically so they are
+                available outside the app sandbox.
+              </Text>
+
+              <View style={styles.buttonRow}>
+                <ActionButton
+                  label="Choose Library Folder"
+                  onPress={() => {
+                    handlePickLibraryFolder().catch(() => {});
+                  }}
+                />
+              </View>
+
+              <Text style={styles.note}>
+                Until you choose one, documents stay in the app sandbox.
+              </Text>
+
+              <Text style={styles.note}>
+                Bundled river mixes are copied into the library root beside{' '}
+                <Text style={styles.inlineCode}>examples/</Text>.
+              </Text>
+
+              <Text style={styles.note}>
+                Mixes are still picked system-wide and stay in their original
+                location.
+              </Text>
+            </View>
+          ) : null}
+
           <View style={[styles.card, styles.cardGlass, styles.panel]}>
             <Text style={styles.panelKicker}>Document</Text>
             <Text style={styles.panelTitle}>Editor and files</Text>
             <Text style={styles.panelSub}>
-              Switch between timing and curve examples, save files into app
-              storage, attach mix inputs, and validate against the native
-              library.
+              Switch between timing and curve examples, save into{' '}
+              {isUsingLibraryFolder ? documentStoreLabel : 'the app sandbox'},
+              attach mix inputs, and validate against the native library.
             </Text>
 
             <View style={styles.segmentRow}>
               <Pressable
-                onPress={() => loadPreset('sbg', 'sample')}
+                onPress={() => {
+                  loadPreset('sbg', 'sample').catch(() => {});
+                }}
                 style={[
                   styles.segmentButton,
                   documentKind === 'sbg' && styles.segmentButtonActive,
@@ -834,7 +1056,9 @@ export function ValidationWorkbench() {
               </Pressable>
 
               <Pressable
-                onPress={() => loadPreset('sbgf', 'sample')}
+                onPress={() => {
+                  loadPreset('sbgf', 'sample').catch(() => {});
+                }}
                 style={[
                   styles.segmentButton,
                   documentKind === 'sbgf' && styles.segmentButtonActive,
@@ -860,14 +1084,23 @@ export function ValidationWorkbench() {
 
             <View style={styles.buttonRow}>
               <ActionButton
+                label="Load"
+                onPress={() => {
+                  handleOpenLoadBrowser().catch(() => {});
+                }}
+              />
+              <ActionButton
                 disabled={isSaving}
                 label={isSaving ? 'Saving...' : 'Save'}
                 onPress={handleSaveDocument}
               />
+            </View>
+
+            <View style={styles.buttonRow}>
               <ActionButton
                 label="Refresh Files"
                 onPress={() => {
-                  refreshDocuments().catch(() => {});
+                  handleRefreshFiles().catch(() => {});
                 }}
               />
               {documentKind === 'sbg' ? (
@@ -881,7 +1114,12 @@ export function ValidationWorkbench() {
             </View>
 
             <Text style={styles.note}>
-              Save name resolves to:{' '}
+              Save target:{' '}
+              <Text style={styles.inlineCode}>{documentStoreLabel}</Text>
+            </Text>
+
+            <Text style={styles.note}>
+              Document path resolves to:{' '}
               <Text style={styles.inlineCode}>{resolvedName}</Text>
             </Text>
 
@@ -1181,47 +1419,204 @@ export function ValidationWorkbench() {
             )}
           </View>
 
-          <View style={[styles.card, styles.cardSoft, styles.panel]}>
-            <Text style={styles.panelKicker}>Storage</Text>
-            <Text style={styles.panelTitle}>Bundled examples and drafts</Text>
-            <Text style={styles.panelSub}>
-              Bundled examples and saved documents live in app-private storage.
-              No extra storage permission is required until we add Android
-              system document pickers.
-            </Text>
-
-            {documents.length === 0 ? (
-              <Text style={styles.emptyState}>
-                No app-local documents found yet. Bundled examples should
-                appear here after the app seeds storage on first launch.
+          {isUsingLibraryFolder ? (
+            <View style={[styles.card, styles.cardSoft, styles.panel]}>
+              <Text style={styles.panelKicker}>Storage</Text>
+              <Text style={styles.panelTitle}>Document library</Text>
+              <Text style={styles.panelSub}>
+                Saved files and bundled examples currently live in your chosen
+                library folder. You can change that folder here later if
+                needed.
               </Text>
-            ) : (
-              documents.map(document => (
-                <Pressable
-                  key={document.name}
+
+              <View style={styles.buttonRow}>
+                <ActionButton
+                  label="Change Library Folder"
                   onPress={() => {
-                    handleLoadDocument(document.name).catch(() => {});
+                    handlePickLibraryFolder().catch(() => {});
+                  }}
+                />
+              </View>
+
+              <Text style={styles.note}>
+                Active document storage:{' '}
+                <Text style={styles.inlineCode}>{documentStoreLabel}</Text>
+              </Text>
+
+              <Text style={styles.note}>
+                Bundled river mixes are available in the library root beside{' '}
+                <Text style={styles.inlineCode}>examples/</Text>.
+              </Text>
+
+              <Text style={styles.note}>
+                Mixes are still picked system-wide and stay in their original
+                location.
+              </Text>
+            </View>
+          ) : null}
+        </ScrollView>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={() => {
+            setIsLoadBrowserVisible(false);
+          }}
+          transparent
+          visible={isLoadBrowserVisible}
+        >
+          <View style={styles.modalScrim}>
+            <Pressable
+              onPress={() => {
+                setIsLoadBrowserVisible(false);
+              }}
+              style={StyleSheet.absoluteFill}
+            />
+
+            <View style={[styles.card, styles.cardSoft, styles.modalCard]}>
+              <Text style={styles.panelKicker}>Load</Text>
+              <Text style={styles.panelTitle}>
+                {isUsingLibraryFolder
+                  ? 'Library Browser'
+                  : 'App Storage Browser'}
+              </Text>
+              <Text style={styles.panelSub}>
+                {isUsingLibraryFolder
+                  ? `Browse bundled examples and saved files inside ${documentStoreLabel}.`
+                  : 'Browse bundled examples and saved files inside the app sandbox.'}
+              </Text>
+
+              <ScrollView
+                contentContainerStyle={styles.breadcrumbRow}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.breadcrumbScroll}
+              >
+                <Pressable
+                  onPress={() => {
+                    setLoadBrowserPath('');
                   }}
                   style={({ pressed }) => [
-                    styles.card,
-                    styles.documentCard,
+                    styles.breadcrumbChip,
+                    !loadBrowserPath && styles.breadcrumbChipActive,
                     pressed && styles.buttonPressed,
                   ]}
                 >
-                  <View style={styles.documentCardRow}>
-                    <Text style={styles.documentName}>{document.name}</Text>
-                    <Text style={styles.documentSize}>
-                      {formatBytes(document.sizeBytes)}
-                    </Text>
-                  </View>
-                  <Text style={styles.documentMeta}>
-                    {formatTimestamp(document.modifiedAtMs)}
+                  <Text
+                    style={[
+                      styles.breadcrumbText,
+                      !loadBrowserPath && styles.breadcrumbTextActive,
+                    ]}
+                  >
+                    {isUsingLibraryFolder ? documentStoreLabel : 'Sandbox'}
                   </Text>
                 </Pressable>
-              ))
-            )}
+
+                {loadBrowserSegments.map((segment, index) => {
+                  const path = loadBrowserSegments.slice(0, index + 1).join('/');
+                  const isActive = path === loadBrowserPath;
+
+                  return (
+                    <Pressable
+                      key={path}
+                      onPress={() => {
+                        setLoadBrowserPath(path);
+                      }}
+                      style={({ pressed }) => [
+                        styles.breadcrumbChip,
+                        isActive && styles.breadcrumbChipActive,
+                        pressed && styles.buttonPressed,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.breadcrumbText,
+                          isActive && styles.breadcrumbTextActive,
+                        ]}
+                      >
+                        {segment}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+
+              {loadBrowserParentPath !== null ? (
+                <Pressable
+                  onPress={() => {
+                    setLoadBrowserPath(loadBrowserParentPath);
+                  }}
+                  style={({ pressed }) => [
+                    styles.card,
+                    styles.browserEntryCard,
+                    styles.browserUpCard,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text style={styles.browserEntryTitle}>..</Text>
+                  <Text style={styles.browserEntryMeta}>Up one folder</Text>
+                </Pressable>
+              ) : null}
+
+              <ScrollView
+                nestedScrollEnabled
+                style={styles.modalEntryList}
+                showsVerticalScrollIndicator={false}
+              >
+                {loadBrowserEntries.length === 0 ? (
+                  <Text style={styles.emptyState}>
+                    This folder is empty.
+                  </Text>
+                ) : (
+                  loadBrowserEntries.map(entry => (
+                    <Pressable
+                      key={`${entry.kind}:${entry.path}`}
+                      onPress={() => {
+                        if (entry.kind === 'directory') {
+                          setLoadBrowserPath(entry.path);
+                          return;
+                        }
+
+                        handleLoadFromBrowser(entry.path).catch(() => {});
+                      }}
+                      style={({ pressed }) => [
+                        styles.card,
+                        styles.browserEntryCard,
+                        pressed && styles.buttonPressed,
+                      ]}
+                    >
+                      <View style={styles.browserEntryHeader}>
+                        <Text style={styles.browserEntryTitle}>
+                          {entry.name}
+                        </Text>
+                        <Text style={styles.browserEntryBadge}>
+                          {entry.kind === 'directory' ? 'Folder' : 'File'}
+                        </Text>
+                      </View>
+                      <Text style={styles.browserEntryMeta}>
+                        {entry.kind === 'directory'
+                          ? `Open ${entry.path}`
+                          : `${formatBytes(
+                              entry.document.sizeBytes,
+                            )} • ${formatTimestamp(
+                              entry.document.modifiedAtMs,
+                            )}`}
+                      </Text>
+                    </Pressable>
+                  ))
+                )}
+              </ScrollView>
+
+              <View style={styles.buttonRow}>
+                <ActionButton
+                  label="Close"
+                  onPress={() => {
+                    setIsLoadBrowserVisible(false);
+                  }}
+                />
+              </View>
+            </View>
           </View>
-        </ScrollView>
+        </Modal>
       </View>
     </SafeAreaView>
   );
@@ -1501,6 +1896,83 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 12,
   },
+  modalScrim: {
+    flex: 1,
+    backgroundColor: 'rgba(10, 12, 18, 0.36)',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 24,
+  },
+  modalCard: {
+    maxHeight: '82%',
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+  },
+  breadcrumbScroll: {
+    marginBottom: 12,
+  },
+  breadcrumbRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  breadcrumbChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.10)',
+    backgroundColor: 'rgba(255, 255, 255, 0.60)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  breadcrumbChipActive: {
+    backgroundColor: 'rgba(58, 124, 255, 0.12)',
+    borderColor: 'rgba(58, 124, 255, 0.22)',
+  },
+  breadcrumbText: {
+    color: 'rgba(20, 20, 20, 0.78)',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  breadcrumbTextActive: {
+    color: '#2b67de',
+  },
+  modalEntryList: {
+    marginBottom: 12,
+  },
+  browserEntryCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.62)',
+    borderColor: 'rgba(0, 0, 0, 0.10)',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 10,
+  },
+  browserUpCard: {
+    marginBottom: 10,
+  },
+  browserEntryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 4,
+  },
+  browserEntryTitle: {
+    color: '#141414',
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  browserEntryBadge: {
+    color: 'rgba(20, 20, 20, 0.64)',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  browserEntryMeta: {
+    color: 'rgba(20, 20, 20, 0.66)',
+    fontSize: 13,
+    lineHeight: 18,
+  },
   button: {
     minWidth: 140,
     paddingHorizontal: 14,
@@ -1566,7 +2038,7 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
   },
   editor: {
-    minHeight: 320,
+    height: 360,
     overflow: 'hidden',
   },
   statusLine: {

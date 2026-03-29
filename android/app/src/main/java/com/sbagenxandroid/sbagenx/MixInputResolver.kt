@@ -22,7 +22,10 @@ data class PreparedMixInput(
     val looping: Boolean,
 )
 
-class MixInputResolver(private val context: Context) {
+class MixInputResolver(
+    private val context: Context,
+    private val documentStore: LocalDocumentStore,
+) {
   fun resolve(mixPath: String, sourceName: String, targetSampleRate: Int): PreparedMixInput {
     val resolvedSource = stageSource(mixPath, sourceName)
 
@@ -75,6 +78,17 @@ class MixInputResolver(private val context: Context) {
     val absoluteFile = File(normalizedPath)
     if (absoluteFile.isAbsolute) {
       return copyFileToTempFile(absoluteFile, absoluteFile.absolutePath)
+    }
+
+    documentStore.resolveLibraryDocument(normalizedPath, sourceName)?.let { libraryDocument ->
+      return copyInputStreamToTempFile(
+          displayName = libraryDocument.displayName,
+          loopingHint = false,
+          inputStream =
+              context.contentResolver.openInputStream(libraryDocument.uri)
+                  ?: throw IllegalArgumentException("Unable to open mix file '${libraryDocument.relativePath}'."),
+          preferredExtension = extensionFor(libraryDocument.relativePath),
+      )
     }
 
     resolveRelativeFile(normalizedPath, sourceName)?.let { relativeFile ->

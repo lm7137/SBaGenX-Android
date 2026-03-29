@@ -3,6 +3,7 @@ package com.sbagenxandroid.sbagenx
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.facebook.react.bridge.BaseActivityEventListener
 import com.facebook.react.bridge.Promise
@@ -14,10 +15,11 @@ import org.json.JSONObject
 class SbaGenXModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
-  private val runtimeLoader = SbgRuntimeLoader(MixInputResolver(reactContext))
-  private val playbackController = PlaybackController(runtimeLoader)
   private val localDocumentStore = LocalDocumentStore(reactContext)
+  private val runtimeLoader = SbgRuntimeLoader(MixInputResolver(reactContext, localDocumentStore))
+  private val playbackController = PlaybackController(runtimeLoader)
   private var pendingMixPickerPromise: Promise? = null
+  private var pendingLibraryFolderPromise: Promise? = null
 
   private val mixPickerListener =
       object : BaseActivityEventListener() {
@@ -27,31 +29,49 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
             resultCode: Int,
             data: Intent?,
         ) {
-          if (requestCode != REQUEST_PICK_MIX) {
-            return
+          when (requestCode) {
+            REQUEST_PICK_MIX -> {
+              val promise = pendingMixPickerPromise ?: return
+              pendingMixPickerPromise = null
+
+              if (resultCode != Activity.RESULT_OK) {
+                promise.resolve(buildPickedMixJson("", ""))
+                return
+              }
+
+              val uri = data?.data
+              if (uri == null) {
+                promise.resolve(buildPickedMixJson("", ""))
+                return
+              }
+
+              takePersistableUriPermission(uri, data)
+              promise.resolve(
+                  buildPickedMixJson(
+                      uri = uri.toString(),
+                      displayName = queryDisplayName(uri).orEmpty(),
+                  ),
+              )
+            }
+            REQUEST_PICK_LIBRARY -> {
+              val promise = pendingLibraryFolderPromise ?: return
+              pendingLibraryFolderPromise = null
+
+              if (resultCode != Activity.RESULT_OK) {
+                promise.resolve(localDocumentStore.getStoreInfo())
+                return
+              }
+
+              val uri = data?.data
+              if (uri == null) {
+                promise.resolve(localDocumentStore.getStoreInfo())
+                return
+              }
+
+              takePersistableUriPermission(uri, data)
+              promise.resolve(localDocumentStore.setLibraryFolder(uri))
+            }
           }
-
-          val promise = pendingMixPickerPromise ?: return
-          pendingMixPickerPromise = null
-
-          if (resultCode != Activity.RESULT_OK) {
-            promise.resolve(buildPickedMixJson("", ""))
-            return
-          }
-
-          val uri = data?.data
-          if (uri == null) {
-            promise.resolve(buildPickedMixJson("", ""))
-            return
-          }
-
-          takePersistableReadPermission(uri, data)
-          promise.resolve(
-              buildPickedMixJson(
-                  uri = uri.toString(),
-                  displayName = queryDisplayName(uri).orEmpty(),
-              ),
-          )
         }
       }
 
@@ -139,6 +159,13 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getDocumentStoreInfo(promise: Promise) {
+    resolveNativeCall(promise) {
+      localDocumentStore.getStoreInfo()
+    }
+  }
+
+  @ReactMethod
   fun saveDocument(name: String, text: String, promise: Promise) {
     resolveNativeCall(promise) {
       localDocumentStore.saveDocument(name, text)
@@ -149,6 +176,43 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   fun loadDocument(name: String, promise: Promise) {
     resolveNativeCall(promise) {
       localDocumentStore.loadDocument(name)
+    }
+  }
+
+  @ReactMethod
+  fun pickLibraryFolder(promise: Promise) {
+    if (pendingLibraryFolderPromise != null) {
+      promise.reject("SBX_LIBRARY_PICK_BUSY", "A library folder request is already in progress.")
+      return
+    }
+
+    val activity = reactApplicationContext.currentActivity
+    if (activity == null) {
+      promise.reject("SBX_LIBRARY_NO_ACTIVITY", "No active Android activity is available.")
+      return
+    }
+
+    val intent =
+        Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            .addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+
+    localDocumentStore.getCurrentLibraryTreeUri()?.let { currentUri ->
+      intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, currentUri)
+    }
+
+    pendingLibraryFolderPromise = promise
+
+    try {
+      if (!reactApplicationContext.startActivityForResult(intent, REQUEST_PICK_LIBRARY, null)) {
+        pendingLibraryFolderPromise = null
+        promise.reject("SBX_LIBRARY_PICK_LAUNCH", "Unable to launch the Android folder picker.")
+      }
+    } catch (error: Throwable) {
+      pendingLibraryFolderPromise = null
+      promise.reject("SBX_LIBRARY_PICK_LAUNCH", error.message, error)
     }
   }
 
@@ -188,6 +252,8 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   override fun invalidate() {
     pendingMixPickerPromise?.resolve(buildPickedMixJson("", ""))
     pendingMixPickerPromise = null
+    pendingLibraryFolderPromise?.resolve(localDocumentStore.getStoreInfo())
+    pendingLibraryFolderPromise = null
     playbackController.stop()
     SbagenxBridge.nativeReleaseContext()
     super.invalidate()
@@ -201,17 +267,16 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  private fun takePersistableReadPermission(uri: Uri, data: Intent?) {
+  private fun takePersistableUriPermission(uri: Uri, data: Intent?) {
     val grantedFlags =
         (data?.flags ?: 0) and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-    val readFlag = grantedFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION
-    if (readFlag == 0) {
+    if (grantedFlags == 0) {
       return
     }
 
     try {
-      reactApplicationContext.contentResolver.takePersistableUriPermission(uri, readFlag)
+      reactApplicationContext.contentResolver.takePersistableUriPermission(uri, grantedFlags)
     } catch (_: Throwable) {
     }
   }
@@ -243,5 +308,6 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   companion object {
     const val NAME = "SbaGenXModule"
     const val REQUEST_PICK_MIX = 40271
+    const val REQUEST_PICK_LIBRARY = 40272
   }
 }

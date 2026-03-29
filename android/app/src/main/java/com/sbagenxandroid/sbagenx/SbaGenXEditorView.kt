@@ -16,8 +16,11 @@ import android.text.style.CharacterStyle
 import android.text.style.UpdateAppearance
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
+import android.widget.Scroller
 import androidx.appcompat.widget.AppCompatEditText
+import android.text.method.ScrollingMovementMethod
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.uimanager.events.RCTEventEmitter
@@ -100,8 +103,10 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
             InputType.TYPE_TEXT_FLAG_MULTI_LINE or
             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
     setHorizontallyScrolling(false)
-    isVerticalScrollBarEnabled = true
+    isVerticalScrollBarEnabled = false
     overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+    movementMethod = ScrollingMovementMethod.getInstance()
+    setScroller(Scroller(context))
     includeFontPadding = false
     setTextColor(Color.parseColor("#161616"))
     setHintTextColor(Color.parseColor("#8c897f"))
@@ -171,6 +176,22 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
     drawCurrentLineHighlight(canvas)
     drawGutter(canvas)
     super.onDraw(canvas)
+  }
+
+  override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+    super.onScrollChanged(l, t, oldl, oldt)
+    invalidate()
+  }
+
+  override fun onTouchEvent(event: MotionEvent): Boolean {
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN,
+      MotionEvent.ACTION_MOVE -> parent?.requestDisallowInterceptTouchEvent(true)
+      MotionEvent.ACTION_UP,
+      MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
+    }
+
+    return super.onTouchEvent(event)
   }
 
   private fun drawCurrentLineHighlight(canvas: Canvas) {
