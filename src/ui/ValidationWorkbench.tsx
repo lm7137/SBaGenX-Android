@@ -46,7 +46,7 @@ const SURFACE_BORDER = SURFACE_SOFT;
 const SURFACE_BORDER_LIGHT = SURFACE_SOFT;
 
 const VALID_SBG_SAMPLE =
-  '00:00    200+10/20 step\n00:30    190+8/20\n01:00    180+6/20\n';
+  '00:00    200+10/20\n00:30    190+8/20\n01:00    180+6/20\n';
 
 const INVALID_SBG_SAMPLE = '-SE\n-Z nope\n\nalloff: -\n\nNOW alloff\n';
 
