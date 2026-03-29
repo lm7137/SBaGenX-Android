@@ -20,7 +20,6 @@ import {
   loadDocument,
   prepareSbgContext,
   renderPreview,
-  resetContext,
   saveDocument,
   startPlayback,
   stopPlayback,
@@ -191,12 +190,10 @@ export function ValidationWorkbench() {
     null,
   );
   const [documents, setDocuments] = useState<SavedDocumentSummary[]>([]);
-  const [isValidating, setIsValidating] = useState(false);
-  const [isLiveValidating, setIsLiveValidating] = useState(false);
-  const [isPreparing, setIsPreparing] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlayingAction, setIsPlayingAction] = useState(false);
+  const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
 
   useEffect(() => {
@@ -279,16 +276,9 @@ export function ValidationWorkbench() {
     kind: DocumentKind,
     nextText: string,
     nextResolvedName: string,
-    mode: 'manual' | 'live',
   ) {
     const requestId = validationRequestIdRef.current + 1;
     validationRequestIdRef.current = requestId;
-
-    if (mode === 'manual') {
-      setIsValidating(true);
-    } else {
-      setIsLiveValidating(true);
-    }
 
     try {
       const result = await validateDocument(kind, nextText, nextResolvedName);
@@ -306,16 +296,10 @@ export function ValidationWorkbench() {
           `Native status ${result.status} (${result.statusText}).`,
         );
       } else if (result.diagnosticCount === 0) {
-        setValidationState(
-          mode === 'live'
-            ? 'Live validation passed with no diagnostics.'
-            : 'Validation passed with no diagnostics.',
-        );
+        setValidationState('Live validation passed with no diagnostics.');
       } else {
         setValidationState(
-          `${
-            mode === 'live' ? 'Live validation' : 'Validation'
-          } returned ${result.diagnosticCount} diagnostic${
+          `Live validation returned ${result.diagnosticCount} diagnostic${
             result.diagnosticCount === 1 ? '' : 's'
           }.`,
         );
@@ -330,27 +314,16 @@ export function ValidationWorkbench() {
       setCurveInfo(null);
       setBridgeError(message);
       setValidationState(
-        mode === 'live'
-          ? 'Live validation failed before diagnostics were returned.'
-          : 'Validation failed before diagnostics were returned.',
+        'Live validation failed before diagnostics were returned.',
       );
     } finally {
       if (requestId !== validationRequestIdRef.current) {
         return;
       }
-
-      if (mode === 'manual') {
-        setIsValidating(false);
-      } else {
-        setIsLiveValidating(false);
-      }
     }
   }
 
-  async function runValidation() {
-    await runValidationFor(documentKind, text, resolvedName, 'manual');
-  }
-
+  /*
   async function handlePrepareContext() {
     if (documentKind !== 'sbg') {
       setValidationState(
@@ -381,6 +354,7 @@ export function ValidationWorkbench() {
       setIsPreparing(false);
     }
   }
+  */
 
   async function handleRenderPreview() {
     if (documentKind !== 'sbg') {
@@ -421,6 +395,7 @@ export function ValidationWorkbench() {
     }
   }
 
+  /*
   async function handleResetContext() {
     try {
       const nextContext = await resetContext();
@@ -432,6 +407,7 @@ export function ValidationWorkbench() {
       );
     }
   }
+  */
 
   async function handleStartPlayback() {
     if (documentKind !== 'sbg') {
@@ -560,7 +536,7 @@ export function ValidationWorkbench() {
     }
 
     const timeoutId = setTimeout(() => {
-      runValidationFor(documentKind, text, resolvedName, 'live').catch(() => {});
+      runValidationFor(documentKind, text, resolvedName).catch(() => {});
     }, 180);
 
     return () => {
@@ -736,18 +712,6 @@ export function ValidationWorkbench() {
                   refreshDocuments().catch(() => {});
                 }}
               />
-              <ActionButton
-                disabled={isValidating}
-                label={
-                  isValidating
-                    ? 'Validating...'
-                    : isLiveValidating
-                    ? 'Validate Now'
-                    : 'Validate Natively'
-                }
-                onPress={runValidation}
-                tone="primary"
-              />
             </View>
 
             <Text style={styles.note}>
@@ -774,12 +738,13 @@ export function ValidationWorkbench() {
             <Text style={styles.panelKicker}>Runtime</Text>
             <Text style={styles.panelTitle}>Render and playback</Text>
             <Text style={styles.panelSub}>
-              Prepare a persistent native context, render a preview buffer, and
-              run Android playback for <Text style={styles.inlineCode}>.sbg</Text>{' '}
-              timing documents.
+              Playback prepares a fresh native runtime automatically for{' '}
+              <Text style={styles.inlineCode}>.sbg</Text> timing documents.
+              Preview tooling is still available behind the developer toggle.
             </Text>
 
             <View style={styles.buttonRow}>
+              {/*
               <ActionButton
                 disabled={isPreparing}
                 label={isPreparing ? 'Preparing...' : 'Prepare Context'}
@@ -787,17 +752,11 @@ export function ValidationWorkbench() {
                   handlePrepareContext().catch(() => {});
                 }}
               />
+              */}
               <ActionButton
-                disabled={isRendering}
-                label={isRendering ? 'Rendering...' : 'Render Preview'}
+                label={showDeveloperTools ? 'Hide Developer Tools' : 'Developer Tools'}
                 onPress={() => {
-                  handleRenderPreview().catch(() => {});
-                }}
-              />
-              <ActionButton
-                label="Reset Context"
-                onPress={() => {
-                  handleResetContext().catch(() => {});
+                  setShowDeveloperTools(current => !current);
                 }}
               />
               <ActionButton
@@ -814,7 +773,20 @@ export function ValidationWorkbench() {
                   handleStopPlayback().catch(() => {});
                 }}
               />
+              {/*
+              <ActionButton
+                label="Reset Context"
+                onPress={() => {
+                  handleResetContext().catch(() => {});
+                }}
+              />
+              */}
             </View>
+
+            <Text style={styles.note}>
+              Use <Text style={styles.inlineCode}>Play</Text> for the normal
+              path. It prepares the runtime and starts audio in one step.
+            </Text>
 
             <View style={styles.metricsGrid}>
               <MetricCard
@@ -837,7 +809,7 @@ export function ValidationWorkbench() {
               />
             </View>
 
-            <Text style={styles.statusLine}>
+            <Text style={[styles.statusLine, styles.runtimeStatusLine]}>
               {playbackState?.active
                 ? `Playback active at ${formatSeconds(
                     playbackState.timeSec,
@@ -849,21 +821,60 @@ export function ValidationWorkbench() {
               <Text style={styles.inlineError}>{playbackState.lastError}</Text>
             ) : null}
 
-            {previewState ? (
-              <View style={[styles.card, styles.innerGlassCard]}>
-                <Text style={styles.innerCardTitle}>Preview Buffer</Text>
+            {showDeveloperTools ? (
+              <View style={[styles.card, styles.innerGlassCard, styles.developerCard]}>
+                <Text style={styles.innerCardTitle}>Developer Tools</Text>
                 <Text style={styles.innerCardMeta}>
-                  {previewState.frameCount} frames, peak{' '}
-                  {previewState.peakAbs.toFixed(3)}, rms{' '}
-                  {previewState.rms.toFixed(3)}
+                  Preview renders a short non-destructive PCM buffer and then
+                  restores the context time.
                 </Text>
-                <Text style={styles.codeBlock}>{samplePreview}</Text>
+
+                <View style={styles.buttonRow}>
+                  <ActionButton
+                    disabled={isRendering}
+                    label={isRendering ? 'Rendering...' : 'Render Preview'}
+                    onPress={() => {
+                      handleRenderPreview().catch(() => {});
+                    }}
+                  />
+                </View>
+
+                {/*
+                <View style={styles.buttonRow}>
+                  <ActionButton
+                    disabled={isPreparing}
+                    label={isPreparing ? 'Preparing...' : 'Prepare Context'}
+                    onPress={() => {
+                      handlePrepareContext().catch(() => {});
+                    }}
+                  />
+                  <ActionButton
+                    label="Reset Context"
+                    onPress={() => {
+                      handleResetContext().catch(() => {});
+                    }}
+                  />
+                </View>
+                */}
+
+                {previewState ? (
+                  <View style={[styles.card, styles.innerGlassCard]}>
+                    <Text style={styles.innerCardTitle}>Preview Buffer</Text>
+                    <Text style={styles.innerCardMeta}>
+                      {previewState.frameCount} frames, peak{' '}
+                      {previewState.peakAbs.toFixed(3)}, rms{' '}
+                      {previewState.rms.toFixed(3)}
+                    </Text>
+                    <Text style={styles.codeBlock}>{samplePreview}</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.emptyState}>
+                    Run preview to smoke-test PCM generation without starting
+                    playback.
+                  </Text>
+                )}
               </View>
-            ) : (
-              <Text style={styles.emptyState}>
-                Render preview to smoke-test PCM generation before playback.
-              </Text>
-            )}
+            ) : null}
           </View>
 
           <View style={[styles.card, styles.cardGlass, styles.panel]}>
@@ -962,7 +973,7 @@ export function ValidationWorkbench() {
 
             {diagnostics.length === 0 ? (
               <Text style={styles.emptyState}>
-                No diagnostics recorded yet. Run validation or load a broken
+                No diagnostics recorded yet. Keep typing or load a broken
                 sample to exercise the native parser and span reporting.
               </Text>
             ) : (
@@ -1388,6 +1399,10 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 12,
   },
+  runtimeStatusLine: {
+    marginTop: 12,
+    marginBottom: 4,
+  },
   inlineError: {
     color: '#9f1c23',
     fontSize: 14,
@@ -1399,6 +1414,9 @@ const styles = StyleSheet.create({
     borderColor: SURFACE_BORDER_LIGHT,
     paddingHorizontal: 14,
     paddingVertical: 14,
+  },
+  developerCard: {
+    marginTop: 4,
   },
   curveInfoCard: {
     marginBottom: 12,
