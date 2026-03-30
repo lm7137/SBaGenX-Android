@@ -2,7 +2,15 @@ package com.sbagenxandroid.sbagenx
 
 import org.json.JSONObject
 
-class SbgRuntimeLoader(private val mixInputResolver: MixInputResolver) {
+data class PreparedPlaybackRuntime(
+    val stateJson: String,
+    val mixInput: PreparedStreamingMixInput?,
+)
+
+class SbgRuntimeLoader(
+    private val mixInputResolver: MixInputResolver,
+    private val streamingMixInputResolver: StreamingMixInputResolver,
+) {
   fun prepare(text: String, sourceName: String): String {
     val inspect = JSONObject(SbagenxBridge.nativeInspectSbgRuntimeConfig(text, sourceName))
     if (inspect.optInt("status", -1) != 0) {
@@ -31,6 +39,52 @@ class SbgRuntimeLoader(private val mixInputResolver: MixInputResolver) {
         mixInput?.sourceName.orEmpty(),
         mixInput?.looping ?: false,
     )
+  }
+
+  fun prepareForPlayback(text: String, sourceName: String): PreparedPlaybackRuntime {
+    val inspect = JSONObject(SbagenxBridge.nativeInspectSbgRuntimeConfig(text, sourceName))
+    if (inspect.optInt("status", -1) != 0) {
+      return PreparedPlaybackRuntime(inspect.toString(), null)
+    }
+
+    val mixPath = inspect.optString("mixPath").takeIf { it.isNotBlank() }
+    val sampleRate = inspect.optInt("sampleRate", 44_100)
+
+    val mixInput =
+        try {
+          mixPath?.let { streamingMixInputResolver.open(it, sourceName, sampleRate) }
+        } catch (error: Throwable) {
+          return PreparedPlaybackRuntime(
+              buildContextErrorJson(
+                  sourceName = inspect.optString("sourceName", sourceName),
+                  sampleRate = sampleRate,
+                  mixPath = mixPath.orEmpty(),
+                  errorMessage = error.message ?: "Failed to resolve mix input.",
+              ),
+              null,
+          )
+        }
+
+    val stateJson =
+        try {
+          SbagenxBridge.nativePrepareSbgContextStreaming(
+              text,
+              sourceName,
+              mixInput?.sourceName.orEmpty(),
+              mixInput?.looping ?: false,
+          )
+        } catch (error: Throwable) {
+          mixInput?.decoder?.close()
+          throw error
+        }
+
+    val state = JSONObject(stateJson)
+    if (state.optInt("status", -1) != 0 || !state.optBoolean("prepared", false)) {
+      mixInput?.decoder?.close()
+      return PreparedPlaybackRuntime(stateJson, null)
+    }
+
+    return PreparedPlaybackRuntime(stateJson, mixInput)
   }
 
   private fun buildContextErrorJson(

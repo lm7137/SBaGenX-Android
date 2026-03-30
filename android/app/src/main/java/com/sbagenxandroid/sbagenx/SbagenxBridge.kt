@@ -21,11 +21,25 @@ object SbagenxBridge {
       mixLooping: Boolean,
   ): String
 
+  external fun nativePrepareSbgContextStreaming(
+      text: String,
+      sourceName: String,
+      mixSourceName: String,
+      mixLooping: Boolean,
+  ): String
+
   external fun nativeGetContextState(): String
 
   external fun nativeRenderPreview(frameCount: Int, sampleValueCount: Int): String
 
   external fun nativeRenderIntoBuffer(buffer: FloatArray, frameCount: Int): Int
+
+  external fun nativeRenderIntoBufferWithMix(
+      buffer: FloatArray,
+      frameCount: Int,
+      mixSamples: ShortArray?,
+      mixFrameCount: Int,
+  ): Int
 
   external fun nativeResetContext(): String
 

@@ -115,6 +115,32 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
     }
   }
 
+  fun loadPickedDocument(uri: Uri): String {
+    val text =
+        reactContext.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+          reader.readText()
+        } ?: throw IllegalArgumentException("Unable to open the selected document for reading.")
+
+    val pickedDocument = DocumentFile.fromSingleUri(reactContext, uri)
+    val relativePath = getLibraryRoot()?.let { root -> findRelativePathByUri(root, "", uri) }
+    val name =
+        relativePath
+            ?: pickedDocument?.name
+            ?: uri.lastPathSegment?.substringAfterLast('/')
+            ?: "picked.sbg"
+    val sourceName = relativePath?.let { "$LIBRARY_SOURCE_PREFIX$it" } ?: uri.toString()
+    val sizeBytes = pickedDocument?.length() ?: text.toByteArray(Charsets.UTF_8).size.toLong()
+    val modifiedAtMs = pickedDocument?.lastModified() ?: 0L
+
+    return buildStoredDocumentJson(
+        name = name,
+        sizeBytes = sizeBytes,
+        modifiedAtMs = modifiedAtMs,
+        sourceName = sourceName,
+        text = text,
+    )
+  }
+
   fun resolveLibraryDocument(path: String, sourceName: String): LibraryResolvedDocument? {
     val root = getLibraryRoot() ?: return null
     val candidatePaths = linkedSetOf<String>()
@@ -269,6 +295,28 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
     }
   }
 
+  private fun findRelativePathByUri(
+      directory: DocumentFile,
+      relativePrefix: String,
+      targetUri: Uri,
+  ): String? {
+    directory.listFiles().forEach { child ->
+      val childName = child.name ?: return@forEach
+      val childPath = if (relativePrefix.isBlank()) childName else "$relativePrefix/$childName"
+      when {
+        child.uri == targetUri && child.isFile -> return childPath
+        child.isDirectory -> {
+          val nested = findRelativePathByUri(child, childPath, targetUri)
+          if (nested != null) {
+            return nested
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
   private fun getActiveBackend(): DocumentStoreBackend {
     val libraryRoot = getLibraryRoot()
     if (libraryRoot != null) {
@@ -378,12 +426,8 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
   private fun copyAssetTreeToLibrary(root: DocumentFile, assetPath: String) {
     val entries = assetManager.list(assetPath).orEmpty()
     if (entries.isEmpty()) {
-      if (findTreeFile(root, assetPath) != null) {
-        return
-      }
-
       val target = findOrCreateTreeFile(root, assetPath, mimeForAsset(assetPath))
-      reactContext.contentResolver.openOutputStream(target.uri, "wt")?.use { output ->
+      reactContext.contentResolver.openOutputStream(target.uri, "w")?.use { output ->
         assetManager.open(assetPath).use { input ->
           input.copyTo(output)
         }
@@ -427,8 +471,53 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
       return existing
     }
 
+    val legacyMatches =
+        parentDirectory.listFiles().filter { child ->
+          child.isFile && matchesManagedFileName(child.name.orEmpty(), fileName)
+        }
+    if (legacyMatches.isNotEmpty()) {
+      legacyMatches.drop(1).forEach { duplicate ->
+        runCatching { duplicate.delete() }
+      }
+
+      val primary = legacyMatches.first()
+      if ((primary.name ?: "") == fileName) {
+        return primary
+      }
+
+      if (runCatching { primary.renameTo(fileName) }.getOrDefault(false)) {
+        parentDirectory.findFile(fileName)?.let { renamed ->
+          if (renamed.isFile) {
+            return renamed
+          }
+        }
+      }
+
+      runCatching { primary.delete() }
+    }
+
     return parentDirectory.createFile(mimeType, fileName)
         ?: throw IllegalArgumentException("Unable to create document '$relativePath'.")
+  }
+
+  private fun matchesManagedFileName(candidateName: String, expectedName: String): Boolean {
+    if (candidateName.equals(expectedName, ignoreCase = true)) {
+      return true
+    }
+
+    return canonicalizeManagedFileName(candidateName)
+        .equals(expectedName.lowercase(), ignoreCase = false)
+  }
+
+  private fun canonicalizeManagedFileName(name: String): String {
+    var working = name.lowercase()
+
+    if (working.endsWith(".txt")) {
+      working = working.removeSuffix(".txt")
+    }
+
+    working = working.replace(Regex(""" \(\d+\)(?=(\.[^./\\]+)?$)"""), "")
+    return working
   }
 
   private fun ensureTreeDirectory(root: DocumentFile, segments: List<String>): DocumentFile {
@@ -501,17 +590,17 @@ class LocalDocumentStore(private val reactContext: ReactApplicationContext) {
 
   private fun mimeForDocument(path: String): String {
     return when {
-      path.endsWith(".sbg", ignoreCase = true) -> "text/plain"
-      path.endsWith(".sbgf", ignoreCase = true) -> "text/plain"
+      path.endsWith(".sbg", ignoreCase = true) -> "application/octet-stream"
+      path.endsWith(".sbgf", ignoreCase = true) -> "application/octet-stream"
       else -> "application/octet-stream"
     }
   }
 
   private fun mimeForAsset(path: String): String {
     return when {
-      path.endsWith(".sbg", ignoreCase = true) -> "text/plain"
-      path.endsWith(".sbgf", ignoreCase = true) -> "text/plain"
-      path.endsWith(".sbxseq", ignoreCase = true) -> "text/plain"
+      path.endsWith(".sbg", ignoreCase = true) -> "application/octet-stream"
+      path.endsWith(".sbgf", ignoreCase = true) -> "application/octet-stream"
+      path.endsWith(".sbxseq", ignoreCase = true) -> "application/octet-stream"
       path.endsWith(".c", ignoreCase = true) -> "text/x-csrc"
       else -> "application/octet-stream"
     }

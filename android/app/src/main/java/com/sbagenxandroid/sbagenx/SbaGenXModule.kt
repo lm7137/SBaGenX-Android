@@ -10,16 +10,22 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.UiThreadUtil
 import org.json.JSONObject
 
 class SbaGenXModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
   private val localDocumentStore = LocalDocumentStore(reactContext)
-  private val runtimeLoader = SbgRuntimeLoader(MixInputResolver(reactContext, localDocumentStore))
+  private val runtimeLoader =
+      SbgRuntimeLoader(
+          MixInputResolver(reactContext, localDocumentStore),
+          StreamingMixInputResolver(reactContext, localDocumentStore),
+      )
   private val playbackController = PlaybackController(runtimeLoader)
   private var pendingMixPickerPromise: Promise? = null
   private var pendingLibraryFolderPromise: Promise? = null
+  private var pendingDocumentPickerPromise: Promise? = null
 
   private val mixPickerListener =
       object : BaseActivityEventListener() {
@@ -35,13 +41,13 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
               pendingMixPickerPromise = null
 
               if (resultCode != Activity.RESULT_OK) {
-                promise.resolve(buildPickedMixJson("", ""))
+                promise.resolve(null)
                 return
               }
 
               val uri = data?.data
               if (uri == null) {
-                promise.resolve(buildPickedMixJson("", ""))
+                promise.resolve(null)
                 return
               }
 
@@ -70,6 +76,24 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
 
               takePersistableUriPermission(uri, data)
               promise.resolve(localDocumentStore.setLibraryFolder(uri))
+            }
+            REQUEST_PICK_DOCUMENT -> {
+              val promise = pendingDocumentPickerPromise ?: return
+              pendingDocumentPickerPromise = null
+
+              if (resultCode != Activity.RESULT_OK) {
+                promise.resolve(null)
+                return
+              }
+
+              val uri = data?.data
+              if (uri == null) {
+                promise.resolve(null)
+                return
+              }
+
+              takePersistableUriPermission(uri, data)
+              promise.resolve(localDocumentStore.loadPickedDocument(uri))
             }
           }
         }
@@ -186,6 +210,43 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun pickDocumentToLoad(promise: Promise) {
+    if (pendingDocumentPickerPromise != null) {
+      promise.reject("SBX_DOCUMENT_PICK_BUSY", "A document picker request is already in progress.")
+      return
+    }
+
+    val activity = reactApplicationContext.currentActivity
+    if (activity == null) {
+      promise.reject("SBX_DOCUMENT_PICK_NO_ACTIVITY", "No active Android activity is available.")
+      return
+    }
+
+    val intent =
+        Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "application/octet-stream"))
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+
+    localDocumentStore.getCurrentLibraryTreeUri()?.let { currentUri ->
+      intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, currentUri)
+    }
+
+    pendingDocumentPickerPromise = promise
+
+    UiThreadUtil.runOnUiThread {
+      try {
+        activity.startActivityForResult(intent, REQUEST_PICK_DOCUMENT)
+      } catch (error: Throwable) {
+        pendingDocumentPickerPromise = null
+        promise.reject("SBX_DOCUMENT_PICK_LAUNCH", error.message, error)
+      }
+    }
+  }
+
+  @ReactMethod
   fun pickLibraryFolder(promise: Promise) {
     if (pendingLibraryFolderPromise != null) {
       promise.reject("SBX_LIBRARY_PICK_BUSY", "A library folder request is already in progress.")
@@ -211,14 +272,13 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
 
     pendingLibraryFolderPromise = promise
 
-    try {
-      if (!reactApplicationContext.startActivityForResult(intent, REQUEST_PICK_LIBRARY, null)) {
+    UiThreadUtil.runOnUiThread {
+      try {
+        activity.startActivityForResult(intent, REQUEST_PICK_LIBRARY)
+      } catch (error: Throwable) {
         pendingLibraryFolderPromise = null
-        promise.reject("SBX_LIBRARY_PICK_LAUNCH", "Unable to launch the Android folder picker.")
+        promise.reject("SBX_LIBRARY_PICK_LAUNCH", error.message, error)
       }
-    } catch (error: Throwable) {
-      pendingLibraryFolderPromise = null
-      promise.reject("SBX_LIBRARY_PICK_LAUNCH", error.message, error)
     }
   }
 
@@ -238,28 +298,37 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
     val intent =
         Intent(Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("audio/*")
+            .setType("*/*")
+            .putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("audio/*", "application/ogg", "application/octet-stream"),
+            )
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             .addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
 
+    localDocumentStore.getCurrentLibraryTreeUri()?.let { currentUri ->
+      intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, currentUri)
+    }
+
     pendingMixPickerPromise = promise
 
-    try {
-      if (!reactApplicationContext.startActivityForResult(intent, REQUEST_PICK_MIX, null)) {
+    UiThreadUtil.runOnUiThread {
+      try {
+        activity.startActivityForResult(intent, REQUEST_PICK_MIX)
+      } catch (error: Throwable) {
         pendingMixPickerPromise = null
-        promise.reject("SBX_PICK_LAUNCH", "Unable to launch the Android file picker.")
+        promise.reject("SBX_PICK_LAUNCH", error.message, error)
       }
-    } catch (error: Throwable) {
-      pendingMixPickerPromise = null
-      promise.reject("SBX_PICK_LAUNCH", error.message, error)
     }
   }
 
   override fun invalidate() {
-    pendingMixPickerPromise?.resolve(buildPickedMixJson("", ""))
+    pendingMixPickerPromise?.resolve(null)
     pendingMixPickerPromise = null
     pendingLibraryFolderPromise?.resolve(localDocumentStore.getStoreInfo())
     pendingLibraryFolderPromise = null
+    pendingDocumentPickerPromise?.resolve(null)
+    pendingDocumentPickerPromise = null
     playbackController.stop()
     SbagenxBridge.nativeReleaseContext()
     super.invalidate()
@@ -315,5 +384,6 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
     const val NAME = "SbaGenXModule"
     const val REQUEST_PICK_MIX = 40271
     const val REQUEST_PICK_LIBRARY = 40272
+    const val REQUEST_PICK_DOCUMENT = 40273
   }
 }

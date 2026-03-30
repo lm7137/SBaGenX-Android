@@ -125,7 +125,8 @@ type NativeSbaGenXModule = {
   saveDocument(name: string, text: string): Promise<string>;
   loadDocument(name: string): Promise<string>;
   pickLibraryFolder(): Promise<string>;
-  pickMixInput(): Promise<string>;
+  pickDocumentToLoad(): Promise<string | null>;
+  pickMixInput(): Promise<string | null>;
 };
 
 const nativeModule = NativeModules.SbaGenXModule as
@@ -252,6 +253,11 @@ export async function loadDocument(name: string): Promise<LoadedDocument> {
   );
 }
 
+export async function pickDocumentToLoad(): Promise<LoadedDocument | null> {
+  const picked = await requireNativeModule().pickDocumentToLoad();
+  return picked ? (JSON.parse(picked) as LoadedDocument) : null;
+}
+
 export async function pickLibraryFolder(): Promise<DocumentStoreInfo> {
   return parseNativeJson<DocumentStoreInfo>(
     requireNativeModule().pickLibraryFolder(),
@@ -259,9 +265,9 @@ export async function pickLibraryFolder(): Promise<DocumentStoreInfo> {
 }
 
 export async function pickMixInput(): Promise<PickedMixInput | null> {
-  const picked = await parseNativeJson<PickedMixInput>(
-    requireNativeModule().pickMixInput(),
-  );
-
-  return picked.uri ? picked : null;
+  const picked = await requireNativeModule().pickMixInput();
+  if (!picked) {
+    return null;
+  }
+  return JSON.parse(picked) as PickedMixInput;
 }

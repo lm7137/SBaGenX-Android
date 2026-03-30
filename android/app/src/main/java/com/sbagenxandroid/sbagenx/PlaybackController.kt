@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Process
 import org.json.JSONObject
+import java.util.concurrent.CancellationException
 import kotlin.math.max
 
 class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
@@ -31,12 +32,15 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
           startGeneration
         }
 
-    val prepState = JSONObject(runtimeLoader.prepare(text, sourceName))
+    val preparedRuntime = runtimeLoader.prepareForPlayback(text, sourceName)
+    val prepState = JSONObject(preparedRuntime.stateJson)
     if (isStartCancelled(startToken)) {
+      preparedRuntime.mixInput?.decoder?.close()
       return getStateJson()
     }
 
     if (prepState.optInt("status", -1) != 0 || !prepState.optBoolean("prepared", false)) {
+      preparedRuntime.mixInput?.decoder?.close()
       synchronized(lock) {
         lastError = prepState.optString("error").takeIf { it.isNotBlank() }
       }
@@ -87,21 +91,43 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
 
     val resolvedBufferFrames = max(256, targetBufferBytes / frameSizeBytes)
     if (isStartCancelled(startToken)) {
+      preparedRuntime.mixInput?.decoder?.close()
       releaseTrack(track)
       return getStateJson()
     }
 
+    val mixDecoder = preparedRuntime.mixInput?.decoder
     val worker =
         Thread({
           Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
           val audioBuffer = FloatArray(resolvedBufferFrames * channelCount)
+          val mixBuffer =
+              if (mixDecoder != null) {
+                ShortArray(resolvedBufferFrames * channelCount)
+              } else {
+                null
+              }
 
           try {
             track.play()
 
             while (shouldContinuePlayback(startToken)) {
+              val mixFrameCount =
+                  if (mixDecoder != null && mixBuffer != null) {
+                    mixDecoder.readFrames(mixBuffer, resolvedBufferFrames) {
+                      !shouldContinuePlayback(startToken)
+                    }
+                  } else {
+                    0
+                  }
+
               val renderStatus =
-                  SbagenxBridge.nativeRenderIntoBuffer(audioBuffer, resolvedBufferFrames)
+                  SbagenxBridge.nativeRenderIntoBufferWithMix(
+                      audioBuffer,
+                      resolvedBufferFrames,
+                      mixBuffer,
+                      mixFrameCount,
+                  )
               if (renderStatus != 0) {
                 lastError = "Native render failed with status $renderStatus."
                 break
@@ -123,9 +149,11 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
                 writtenValues += written
               }
             }
+          } catch (_: CancellationException) {
           } catch (error: Throwable) {
             lastError = error.message ?: "Unexpected playback error."
           } finally {
+            mixDecoder?.close()
             synchronized(lock) {
               if (startGeneration == startToken) {
                 isPlaying = false

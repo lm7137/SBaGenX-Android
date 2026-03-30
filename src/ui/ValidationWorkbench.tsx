@@ -20,6 +20,7 @@ import {
   isNativeBridgeAvailable,
   listDocuments,
   loadDocument,
+  pickDocumentToLoad,
   pickLibraryFolder,
   pickMixInput,
   prepareSbgContext,
@@ -427,6 +428,7 @@ export function ValidationWorkbench() {
   const [isPlayingAction, setIsPlayingAction] = useState(false);
   const [mixDisplayName, setMixDisplayName] = useState<string | null>(null);
   const [isLoadBrowserVisible, setIsLoadBrowserVisible] = useState(false);
+  const [isLoadBrowserLoading, setIsLoadBrowserLoading] = useState(false);
   const [loadBrowserPath, setLoadBrowserPath] = useState('');
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
@@ -463,10 +465,9 @@ export function ValidationWorkbench() {
   useEffect(() => {
     let cancelled = false;
 
-    async function refreshNonValidationState() {
+    async function refreshInitialState() {
       try {
-        const [docs, playback, context, storeInfo] = await Promise.all([
-          listDocuments(),
+        const [playback, context, storeInfo] = await Promise.all([
           getPlaybackState(),
           getContextState(),
           getDocumentStoreInfo(),
@@ -476,7 +477,6 @@ export function ValidationWorkbench() {
           return;
         }
 
-        setDocuments(docs);
         setPlaybackState(playback);
         setContextState(context);
         setDocumentStoreInfo(storeInfo);
@@ -491,9 +491,26 @@ export function ValidationWorkbench() {
       }
     }
 
-    refreshNonValidationState().catch(() => {});
+    refreshInitialState().catch(() => {});
     const timer = setInterval(() => {
-      refreshNonValidationState().catch(() => {});
+      Promise.all([getPlaybackState(), getContextState()])
+        .then(([playback, context]) => {
+          if (cancelled) {
+            return;
+          }
+
+          setPlaybackState(playback);
+          setContextState(context);
+        })
+        .catch(error => {
+          if (!cancelled) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : 'Failed to refresh native state.';
+            setBridgeError(message);
+          }
+        });
     }, 1000);
 
     return () => {
@@ -692,6 +709,8 @@ export function ValidationWorkbench() {
     }
 
     setIsPlayingAction(true);
+    setBridgeError(null);
+    setValidationState('Starting native playback...');
 
     try {
       const nextState = await startPlayback(text, effectiveSourceName);
@@ -731,6 +750,8 @@ export function ValidationWorkbench() {
 
   async function handleSaveDocument() {
     setIsSaving(true);
+    setBridgeError(null);
+    setValidationState('Saving document...');
 
     try {
       const saved = await saveDocument(resolvedName, text);
@@ -775,17 +796,30 @@ export function ValidationWorkbench() {
 
   async function handleOpenLoadBrowser() {
     try {
-      const [docs, storeInfo] = await Promise.all([
-        listDocuments(),
-        getDocumentStoreInfo(),
-      ]);
-      setDocuments(docs);
-      setDocumentStoreInfo(storeInfo);
+      setBridgeError(null);
       setLoadBrowserPath('');
-      setIsLoadBrowserVisible(true);
+      setIsLoadBrowserVisible(false);
+      setIsLoadBrowserLoading(false);
+      setValidationState('Opening Android document picker...');
+      const picked = await pickDocumentToLoad();
+      if (!picked) {
+        setValidationState('Document selection cancelled.');
+        return;
+      }
+
+      const nextKind = inferDocumentKind(picked.name);
+      setDocumentKind(nextKind);
+      setFileName(picked.name);
+      setDocumentSourceName(picked.sourceName ?? picked.name);
+      setText(picked.text);
+      setMixDisplayName(null);
+      setDiagnostics([]);
+      setCurveInfo(null);
+      setPreviewState(null);
+      setValidationState(`Loaded ${picked.name}.`);
     } catch (error) {
       setBridgeError(
-        error instanceof Error ? error.message : 'Failed to open file browser.',
+        error instanceof Error ? error.message : 'Failed to open document picker.',
       );
     }
   }
@@ -862,8 +896,10 @@ export function ValidationWorkbench() {
     }
 
     try {
+      setBridgeError(null);
+      setValidationState('Opening Android file picker...');
       const picked = await pickMixInput();
-      if (!picked) {
+      if (!picked || !picked.uri.trim()) {
         setValidationState('Mix selection cancelled.');
         return;
       }
@@ -1591,7 +1627,9 @@ export function ValidationWorkbench() {
                 style={styles.modalEntryList}
                 showsVerticalScrollIndicator={false}
               >
-                {loadBrowserEntries.length === 0 ? (
+                {isLoadBrowserLoading ? (
+                  <Text style={styles.emptyState}>Loading files...</Text>
+                ) : loadBrowserEntries.length === 0 ? (
                   <Text style={styles.emptyState}>
                     This folder is empty.
                   </Text>
