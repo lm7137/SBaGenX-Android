@@ -1,6 +1,7 @@
 import { NativeModules, Platform } from 'react-native';
 
 export type DocumentKind = 'sbg' | 'sbgf';
+export type ProgramKind = 'drop' | 'sigmoid' | 'slide' | 'curve';
 
 export type SbaGenXDiagnostic = {
   severity: 'error' | 'warning';
@@ -109,15 +110,46 @@ export type PickedMixInput = {
   displayName: string;
 };
 
+export type ProgramRuntimeRequest = {
+  programKind: ProgramKind;
+  mainArg: string;
+  dropTimeSec: number;
+  holdTimeSec: number;
+  wakeTimeSec: number;
+  curveText?: string | null;
+  sourceName?: string;
+  mixPath?: string | null;
+};
+
 type NativeSbaGenXModule = {
   getBridgeInfo(): Promise<string>;
   validateSbg(text: string, sourceName?: string): Promise<string>;
   validateSbgf(text: string, sourceName?: string): Promise<string>;
   prepareSbgContext(text: string, sourceName?: string): Promise<string>;
+  prepareProgramContext(
+    programKind: ProgramKind,
+    mainArg: string,
+    dropTimeSec: number,
+    holdTimeSec: number,
+    wakeTimeSec: number,
+    curveText?: string | null,
+    sourceName?: string,
+    mixPath?: string | null,
+  ): Promise<string>;
   getContextState(): Promise<string>;
   renderPreview(frameCount: number, sampleValueCount: number): Promise<string>;
   resetContext(): Promise<string>;
   startPlayback(text: string, sourceName?: string): Promise<string>;
+  startProgramPlayback(
+    programKind: ProgramKind,
+    mainArg: string,
+    dropTimeSec: number,
+    holdTimeSec: number,
+    wakeTimeSec: number,
+    curveText?: string | null,
+    sourceName?: string,
+    mixPath?: string | null,
+  ): Promise<string>;
   stopPlayback(): Promise<string>;
   getPlaybackState(): Promise<string>;
   listDocuments(): Promise<string>;
@@ -194,6 +226,23 @@ export async function getContextState(): Promise<ContextState> {
   return parseNativeJson<ContextState>(requireNativeModule().getContextState());
 }
 
+export async function prepareProgramContext(
+  request: ProgramRuntimeRequest,
+): Promise<ContextState> {
+  return parseNativeJson<ContextState>(
+    requireNativeModule().prepareProgramContext(
+      request.programKind,
+      request.mainArg,
+      request.dropTimeSec,
+      request.holdTimeSec,
+      request.wakeTimeSec,
+      request.curveText ?? null,
+      request.sourceName ?? `program:${request.programKind}`,
+      request.mixPath ?? null,
+    ),
+  );
+}
+
 export async function renderPreview(
   frameCount: number,
   sampleValueCount: number,
@@ -213,6 +262,23 @@ export async function startPlayback(
 ): Promise<PlaybackState> {
   return parseNativeJson<PlaybackState>(
     requireNativeModule().startPlayback(text, sourceName ?? 'scratch.sbg'),
+  );
+}
+
+export async function startProgramPlayback(
+  request: ProgramRuntimeRequest,
+): Promise<PlaybackState> {
+  return parseNativeJson<PlaybackState>(
+    requireNativeModule().startProgramPlayback(
+      request.programKind,
+      request.mainArg,
+      request.dropTimeSec,
+      request.holdTimeSec,
+      request.wakeTimeSec,
+      request.curveText ?? null,
+      request.sourceName ?? `program:${request.programKind}`,
+      request.mixPath ?? null,
+    ),
   );
 }
 

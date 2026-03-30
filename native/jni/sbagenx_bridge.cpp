@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +19,11 @@ extern "C" {
 namespace {
 
 constexpr const char *kBridgeVersion = "0.5.0";
+constexpr int kDefaultProgramDropSec = 1800;
+constexpr int kDefaultProgramHoldSec = 1800;
+constexpr int kDefaultProgramWakeSec = 180;
+constexpr int kDefaultProgramStepLenSec = 180;
+constexpr int kShortProgramStepLenSec = 60;
 
 struct CurveParameterSnapshot {
   std::string name;
@@ -203,6 +209,14 @@ struct CurveDeleter {
   }
 };
 
+struct ProgramKeyframesDeleter {
+  void operator()(SbxProgramKeyframe *frames) const {
+    if (frames) {
+      std::free(frames);
+    }
+  }
+};
+
 struct SafeSeqPreparedText {
   SafeSeqPreparedText() {
     sbx_default_safe_seqfile_preamble(&config);
@@ -218,6 +232,525 @@ struct SafeSeqPreparedText {
   char *prepared_text = nullptr;
   SbxSafeSeqfilePreamble config{};
 };
+
+enum class ProgramKind {
+  kDrop,
+  kSigmoid,
+  kSlide,
+  kCurve,
+};
+
+struct CurveParameterOverride {
+  std::string name;
+  double value = 0.0;
+};
+
+struct ProgramRequest {
+  ProgramKind kind = ProgramKind::kDrop;
+  std::string main_arg;
+  int drop_time_sec = kDefaultProgramDropSec;
+  int hold_time_sec = kDefaultProgramHoldSec;
+  int wake_time_sec = kDefaultProgramWakeSec;
+  std::string curve_text;
+  std::string source_name;
+  std::string mix_path;
+};
+
+struct DropLikeMainArg {
+  bool mute_program_tone = false;
+  bool slide = false;
+  bool include_hold = false;
+  bool wake_enabled = false;
+  bool is_isochronic = false;
+  bool is_monaural = false;
+  int step_len_sec = kDefaultProgramStepLenSec;
+  double carrier_base_hz = 200.0;
+  double beat_target_hz = 2.5;
+  double beat_start_hz = 10.0;
+  double amp_pct = 100.0;
+  double sig_l = 0.125;
+  double sig_h = 0.0;
+  std::vector<CurveParameterOverride> curve_overrides;
+};
+
+struct SlideMainArg {
+  bool is_isochronic = false;
+  bool is_monaural = false;
+  double carrier_start_hz = 200.0;
+  double carrier_end_hz = 5.0;
+  double beat_hz = 10.0;
+  double amp_pct = 100.0;
+};
+
+std::string trim_ascii(const std::string &input) {
+  size_t start = 0U;
+  while (start < input.size() &&
+         std::isspace(static_cast<unsigned char>(input[start])) != 0) {
+    ++start;
+  }
+
+  size_t end = input.size();
+  while (end > start &&
+         std::isspace(static_cast<unsigned char>(input[end - 1U])) != 0) {
+    --end;
+  }
+
+  return input.substr(start, end - start);
+}
+
+std::string lowercase_ascii(std::string input) {
+  std::transform(input.begin(),
+                 input.end(),
+                 input.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return input;
+}
+
+const char *program_kind_name(ProgramKind kind) {
+  switch (kind) {
+    case ProgramKind::kDrop:
+      return "drop";
+    case ProgramKind::kSigmoid:
+      return "sigmoid";
+    case ProgramKind::kSlide:
+      return "slide";
+    case ProgramKind::kCurve:
+      return "curve";
+  }
+
+  return "drop";
+}
+
+bool parse_program_kind(const std::string &input, ProgramKind *out) {
+  if (!out) {
+    return false;
+  }
+
+  const std::string value = lowercase_ascii(trim_ascii(input));
+  if (value == "drop") {
+    *out = ProgramKind::kDrop;
+    return true;
+  }
+  if (value == "sigmoid") {
+    *out = ProgramKind::kSigmoid;
+    return true;
+  }
+  if (value == "slide") {
+    *out = ProgramKind::kSlide;
+    return true;
+  }
+  if (value == "curve") {
+    *out = ProgramKind::kCurve;
+    return true;
+  }
+  return false;
+}
+
+bool curve_name_char(int ch, bool first) {
+  return std::isalpha(ch) != 0 || ch == '_' ||
+         (!first && (std::isdigit(ch) != 0 || ch == '.'));
+}
+
+bool parse_program_target_spec(const char *text,
+                               const char **end_out,
+                               double *target_hz_out) {
+  static constexpr double kProgramTargetVals[] = {
+      4.4, 3.7, 3.1, 2.5, 2.0, 1.5, 1.2, 0.9, 0.7, 0.5, 0.4, 0.3,
+  };
+
+  if (!text || !*text) {
+    return false;
+  }
+
+  bool negative = false;
+  const char *cursor = text;
+  if (*cursor == '+' || *cursor == '-') {
+    negative = (*cursor == '-');
+    ++cursor;
+  }
+
+  if (std::isalpha(static_cast<unsigned char>(*cursor)) == 0) {
+    return false;
+  }
+
+  const int index = std::tolower(static_cast<unsigned char>(*cursor)) - 'a';
+  if (index < 0 ||
+      index >= static_cast<int>(sizeof(kProgramTargetVals) / sizeof(kProgramTargetVals[0]))) {
+    return false;
+  }
+  ++cursor;
+
+  double frac = 0.0;
+  if (*cursor == '.') {
+    char *number_end = nullptr;
+    frac = std::strtod(cursor, &number_end);
+    if (number_end == cursor || frac < 0.0 || frac >= 1.0) {
+      return false;
+    }
+    cursor = number_end;
+  }
+
+  const double current = kProgramTargetVals[index];
+  const double next =
+      (index + 1 <
+       static_cast<int>(sizeof(kProgramTargetVals) / sizeof(kProgramTargetVals[0])))
+          ? kProgramTargetVals[index + 1]
+          : 0.2;
+  double target = current + frac * (next - current);
+  if (negative) {
+    target = 2.0 * kProgramTargetVals[0] - target;
+  }
+
+  if (target_hz_out) {
+    *target_hz_out = target;
+  }
+  if (end_out) {
+    *end_out = cursor;
+  }
+  return true;
+}
+
+void fill_program_tone_spec(SbxToneSpec *tone,
+                            bool is_isochronic,
+                            bool is_monaural,
+                            double carrier_hz,
+                            double beat_hz,
+                            double amp_pct) {
+  if (!tone) {
+    return;
+  }
+
+  sbx_default_tone_spec(tone);
+  tone->mode = is_isochronic ? SBX_TONE_ISOCHRONIC
+                             : (is_monaural ? SBX_TONE_MONAURAL : SBX_TONE_BINAURAL);
+  tone->carrier_hz = carrier_hz;
+  tone->beat_hz = beat_hz;
+  tone->amplitude = amp_pct / 100.0;
+}
+
+std::string program_default_source_name(ProgramKind kind) {
+  return std::string("program:") + program_kind_name(kind);
+}
+
+bool parse_drop_like_main_arg(const std::string &main_arg,
+                              ProgramKind kind,
+                              DropLikeMainArg *out,
+                              std::string *error_out) {
+  if (!out) {
+    if (error_out) {
+      *error_out = "Internal program parser error.";
+    }
+    return false;
+  }
+
+  const std::string trimmed = trim_ascii(main_arg);
+  if (trimmed.empty()) {
+    if (error_out) {
+      *error_out = std::string("Built-in ") + program_kind_name(kind) +
+                   " requires a main argument.";
+    }
+    return false;
+  }
+
+  DropLikeMainArg parsed;
+  const char *cursor = trimmed.c_str();
+  if (*cursor == 'N' || *cursor == 'n') {
+    parsed.mute_program_tone = true;
+    parsed.carrier_base_hz = 200.0;
+    ++cursor;
+  } else {
+    char *number_end = nullptr;
+    const double level = std::strtod(cursor, &number_end);
+    if (number_end == cursor) {
+      if (error_out) {
+        *error_out = std::string("Invalid ") + program_kind_name(kind) +
+                     " level prefix.";
+      }
+      return false;
+    }
+    parsed.carrier_base_hz = 200.0 - 2.0 * level;
+    if (!(std::isfinite(parsed.carrier_base_hz) &&
+          parsed.carrier_base_hz >= 0.0)) {
+      if (error_out) {
+        *error_out =
+            std::string("Invalid ") + program_kind_name(kind) +
+            " carrier start derived from the level prefix.";
+      }
+      return false;
+    }
+    cursor = number_end;
+  }
+
+  const char *target_end = nullptr;
+  if (!parse_program_target_spec(cursor, &target_end, &parsed.beat_target_hz)) {
+    if (error_out) {
+      *error_out =
+          std::string("Invalid ") + program_kind_name(kind) + " target spec.";
+    }
+    return false;
+  }
+  cursor = target_end;
+
+  bool have_step_mode = false;
+  while (*cursor != '\0') {
+    if (std::isspace(static_cast<unsigned char>(*cursor)) != 0) {
+      ++cursor;
+      continue;
+    }
+
+    if (*cursor == 's' || *cursor == 'k') {
+      if (have_step_mode) {
+        if (error_out) {
+          *error_out =
+              std::string("Duplicate step/slide flag in ") +
+              program_kind_name(kind) + " main argument.";
+        }
+        return false;
+      }
+      have_step_mode = true;
+      if (*cursor == 's') {
+        parsed.slide = true;
+        parsed.step_len_sec = kShortProgramStepLenSec;
+      } else {
+        parsed.step_len_sec = kShortProgramStepLenSec;
+      }
+      ++cursor;
+      continue;
+    }
+    if (*cursor == '+') {
+      parsed.include_hold = true;
+      ++cursor;
+      continue;
+    }
+    if (*cursor == '^') {
+      parsed.wake_enabled = true;
+      ++cursor;
+      continue;
+    }
+    if (*cursor == '@') {
+      parsed.is_isochronic = true;
+      ++cursor;
+      continue;
+    }
+    if (*cursor == 'M') {
+      parsed.is_monaural = true;
+      ++cursor;
+      continue;
+    }
+    if (*cursor == '/') {
+      ++cursor;
+      char *number_end = nullptr;
+      const double amp_pct = std::strtod(cursor, &number_end);
+      if (number_end == cursor || !std::isfinite(amp_pct) || amp_pct < 0.0) {
+        if (error_out) {
+          *error_out =
+              std::string("Invalid amplitude suffix in ") +
+              program_kind_name(kind) + " main argument.";
+        }
+        return false;
+      }
+      parsed.amp_pct = amp_pct;
+      cursor = number_end;
+      continue;
+    }
+    if (*cursor == ':') {
+      ++cursor;
+      if (cursor[0] == 'S' && cursor[1] == '=') {
+        cursor += 2;
+        char *number_end = nullptr;
+        const double beat_start = std::strtod(cursor, &number_end);
+        if (number_end == cursor || !std::isfinite(beat_start) ||
+            beat_start <= 0.0) {
+          if (error_out) {
+            *error_out =
+                std::string("Invalid :S= value in ") +
+                program_kind_name(kind) + " main argument.";
+          }
+          return false;
+        }
+        parsed.beat_start_hz = beat_start;
+        cursor = number_end;
+        continue;
+      }
+
+      if (kind == ProgramKind::kSigmoid &&
+          ((cursor[0] == 'l' || cursor[0] == 'h') && cursor[1] == '=')) {
+        const char which = cursor[0];
+        cursor += 2;
+        char *number_end = nullptr;
+        const double value = std::strtod(cursor, &number_end);
+        if (number_end == cursor || !std::isfinite(value)) {
+          if (error_out) {
+            *error_out =
+                std::string("Invalid :") + which + "= value in sigmoid main argument.";
+          }
+          return false;
+        }
+        if (which == 'l') {
+          parsed.sig_l = value;
+        } else {
+          parsed.sig_h = value;
+        }
+        cursor = number_end;
+        continue;
+      }
+
+      if (kind == ProgramKind::kCurve) {
+        if (!curve_name_char(static_cast<unsigned char>(*cursor), true)) {
+          if (error_out) {
+            *error_out = "Invalid curve parameter override name.";
+          }
+          return false;
+        }
+
+        std::string name;
+        name.push_back(*cursor++);
+        while (*cursor != '\0' &&
+               curve_name_char(static_cast<unsigned char>(*cursor), false)) {
+          name.push_back(*cursor++);
+        }
+        if (*cursor != '=') {
+          if (error_out) {
+            *error_out = "Invalid curve parameter override syntax.";
+          }
+          return false;
+        }
+        ++cursor;
+
+        char *number_end = nullptr;
+        const double value = std::strtod(cursor, &number_end);
+        if (number_end == cursor || !std::isfinite(value)) {
+          if (error_out) {
+            *error_out = "Invalid curve parameter override value.";
+          }
+          return false;
+        }
+        parsed.curve_overrides.push_back(CurveParameterOverride{name, value});
+        cursor = number_end;
+        continue;
+      }
+
+      if (error_out) {
+        *error_out =
+            std::string("Unsupported : option in ") + program_kind_name(kind) +
+            " main argument.";
+      }
+      return false;
+    }
+
+    if (error_out) {
+      *error_out =
+          std::string("Trailing text in ") + program_kind_name(kind) +
+          " main argument.";
+    }
+    return false;
+  }
+
+  if (parsed.is_monaural && parsed.is_isochronic) {
+    if (error_out) {
+      *error_out =
+          std::string("Monaural mode cannot be combined with isochronic mode for ") +
+          program_kind_name(kind) + '.';
+    }
+    return false;
+  }
+
+  if (parsed.mute_program_tone) {
+    parsed.amp_pct = 0.0;
+  }
+
+  *out = parsed;
+  return true;
+}
+
+bool parse_slide_main_arg(const std::string &main_arg,
+                          SlideMainArg *out,
+                          std::string *error_out) {
+  if (!out) {
+    if (error_out) {
+      *error_out = "Internal slide parser error.";
+    }
+    return false;
+  }
+
+  const std::string trimmed = trim_ascii(main_arg);
+  if (trimmed.empty()) {
+    if (error_out) {
+      *error_out = "Built-in slide requires a main argument.";
+    }
+    return false;
+  }
+
+  const char *cursor = trimmed.c_str();
+  char *number_end = nullptr;
+  const double carrier_hz = std::strtod(cursor, &number_end);
+  if (number_end == cursor || !std::isfinite(carrier_hz) || carrier_hz <= 0.0) {
+    if (error_out) {
+      *error_out = "Invalid slide carrier frequency.";
+    }
+    return false;
+  }
+  cursor = number_end;
+
+  const char signal = *cursor;
+  if (signal != '+' && signal != '-' && signal != '@' && signal != 'M') {
+    if (error_out) {
+      *error_out = "Slide expects +, -, @, or M between carrier and beat.";
+    }
+    return false;
+  }
+  ++cursor;
+
+  number_end = nullptr;
+  const double beat_hz = std::strtod(cursor, &number_end);
+  if (number_end == cursor || !std::isfinite(beat_hz)) {
+    if (error_out) {
+      *error_out = "Invalid slide beat value.";
+    }
+    return false;
+  }
+  cursor = number_end;
+
+  if (*cursor != '/') {
+    if (error_out) {
+      *error_out = "Slide expects /<amp> after the beat value.";
+    }
+    return false;
+  }
+  ++cursor;
+
+  number_end = nullptr;
+  const double amp_pct = std::strtod(cursor, &number_end);
+  if (number_end == cursor || !std::isfinite(amp_pct) || amp_pct < 0.0) {
+    if (error_out) {
+      *error_out = "Invalid slide amplitude value.";
+    }
+    return false;
+  }
+  cursor = number_end;
+
+  while (*cursor != '\0' &&
+         std::isspace(static_cast<unsigned char>(*cursor)) != 0) {
+    ++cursor;
+  }
+  if (*cursor != '\0') {
+    if (error_out) {
+      *error_out = "Trailing text in slide main argument.";
+    }
+    return false;
+  }
+
+  SlideMainArg parsed;
+  parsed.is_isochronic = signal == '@';
+  parsed.is_monaural = signal == 'M';
+  parsed.carrier_start_hz = carrier_hz;
+  parsed.carrier_end_hz = beat_hz / 2.0;
+  parsed.beat_hz = signal == '-' ? -std::fabs(beat_hz) : std::fabs(beat_hz);
+  parsed.amp_pct = amp_pct;
+
+  *out = parsed;
+  return true;
+}
 
 int parse_safe_sbg_text(const std::string &text,
                         SafeSeqPreparedText *out,
@@ -294,6 +827,31 @@ class BridgeRuntimeState {
                                     mix_source_name,
                                     mix_looping,
                                     true);
+  }
+
+  std::string prepare_program_context(const ProgramRequest &request,
+                                      const int16_t *mix_samples,
+                                      size_t mix_sample_count,
+                                      const std::string &mix_source_name,
+                                      bool mix_looping) {
+    return prepare_program_context_impl(request,
+                                        mix_samples,
+                                        mix_sample_count,
+                                        mix_source_name,
+                                        mix_looping,
+                                        false);
+  }
+
+  std::string prepare_program_context_streaming(
+      const ProgramRequest &request,
+      const std::string &mix_source_name,
+      bool mix_looping) {
+    return prepare_program_context_impl(request,
+                                        nullptr,
+                                        0U,
+                                        mix_source_name,
+                                        mix_looping,
+                                        true);
   }
 
   std::string context_state_json() {
@@ -466,6 +1024,512 @@ class BridgeRuntimeState {
   }
 
  private:
+  std::string adopt_context_locked(
+      std::unique_ptr<SbxContext, ContextDeleter> next_ctx,
+      double duration_sec,
+      const std::string &mix_path,
+      const std::string &mix_source_name,
+      bool mix_looping,
+      const int16_t *mix_samples,
+      size_t mix_sample_count) {
+    duration_sec_ = duration_sec;
+    context_ = std::move(next_ctx);
+    mix_path_ = mix_path;
+    mix_source_name_.clear();
+    mix_looping_ = false;
+    mix_active_ = false;
+    mix_cursor_frame_ = 0U;
+    mix_samples_.clear();
+
+    if (!mix_path.empty()) {
+      mix_active_ = true;
+      mix_looping_ = mix_looping;
+      mix_source_name_ = mix_source_name.empty() ? mix_path : mix_source_name;
+      if (mix_samples && mix_sample_count > 0U) {
+        mix_samples_.assign(mix_samples, mix_samples + mix_sample_count);
+      }
+    }
+
+    return build_context_state_json_locked(SBX_OK, "");
+  }
+
+  std::string prepare_program_context_impl(const ProgramRequest &request,
+                                           const int16_t *mix_samples,
+                                           size_t mix_sample_count,
+                                           const std::string &mix_source_name,
+                                           bool mix_looping,
+                                           bool allow_streaming_without_samples) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    clear_locked();
+    source_name_ = request.source_name.empty()
+                       ? program_default_source_name(request.kind)
+                       : request.source_name;
+    mix_path_ = request.mix_path;
+
+    sbx_default_engine_config(&config_);
+
+    const bool mix_required = !request.mix_path.empty();
+    if (mix_required && !allow_streaming_without_samples &&
+        (!mix_samples || mix_sample_count < 2U)) {
+      return build_context_state_json_locked(
+          SBX_EINVAL,
+          "This program declares a mix input, but no decoded mix stream was supplied.");
+    }
+
+    if (request.drop_time_sec <= 0 || request.hold_time_sec < 0 ||
+        request.wake_time_sec < 0) {
+      return build_context_state_json_locked(
+          SBX_EINVAL,
+          "Program timing values must be positive for the main span and non-negative for hold/wake.");
+    }
+
+    const int drop_sec = request.drop_time_sec;
+    const int hold_sec_input = request.hold_time_sec;
+    const int wake_sec_input = request.wake_time_sec;
+
+    if (request.kind == ProgramKind::kSlide) {
+      SlideMainArg parsed;
+      std::string parse_error;
+      if (!parse_slide_main_arg(request.main_arg, &parsed, &parse_error)) {
+        return build_context_state_json_locked(SBX_EINVAL, parse_error);
+      }
+
+      SbxBuiltinSlideConfig prog_cfg{};
+      sbx_default_builtin_slide_config(&prog_cfg);
+      fill_program_tone_spec(&prog_cfg.start_tone,
+                             parsed.is_isochronic,
+                             parsed.is_monaural,
+                             parsed.carrier_start_hz,
+                             parsed.beat_hz,
+                             parsed.amp_pct);
+      prog_cfg.carrier_end_hz = parsed.carrier_end_hz;
+      prog_cfg.slide_sec = drop_sec;
+
+      std::unique_ptr<SbxProgramKeyframe, ProgramKeyframesDeleter> frames;
+      size_t frame_count = 0U;
+      SbxProgramKeyframe *raw_frames = nullptr;
+      const int build_status =
+          sbx_build_slide_keyframes(&prog_cfg, &raw_frames, &frame_count);
+      frames.reset(raw_frames);
+      if (build_status != SBX_OK) {
+        return build_context_state_json_locked(
+            build_status, "Failed to build the built-in slide program.");
+      }
+
+      SbxRuntimeContextConfig runtime_cfg{};
+      sbx_default_runtime_context_config(&runtime_cfg);
+      runtime_cfg.engine = config_;
+      runtime_cfg.default_mix_amp_pct = 100.0;
+
+      double duration_sec = 0.0;
+      SbxContext *raw_ctx = nullptr;
+      const int create_status = sbx_runtime_context_create_from_keyframes(
+          frames.get(), frame_count, 0, &runtime_cfg, &duration_sec, &raw_ctx);
+      std::unique_ptr<SbxContext, ContextDeleter> next_ctx(raw_ctx);
+      if (create_status != SBX_OK) {
+        const char *error = raw_ctx ? sbx_context_last_error(raw_ctx) : nullptr;
+        return build_context_state_json_locked(
+            create_status,
+            error && error[0] ? error
+                              : "Failed to create the built-in slide runtime.");
+      }
+
+      return adopt_context_locked(std::move(next_ctx),
+                                  duration_sec,
+                                  request.mix_path,
+                                  mix_source_name,
+                                  mix_looping,
+                                  mix_samples,
+                                  mix_sample_count);
+    }
+
+    DropLikeMainArg parsed;
+    std::string parse_error;
+    if (!parse_drop_like_main_arg(request.main_arg,
+                                  request.kind,
+                                  &parsed,
+                                  &parse_error)) {
+      return build_context_state_json_locked(SBX_EINVAL, parse_error);
+    }
+
+    const int hold_sec = parsed.include_hold ? hold_sec_input : 0;
+    const int wake_sec = parsed.wake_enabled ? wake_sec_input : 0;
+    const int main_sec = drop_sec + hold_sec;
+    const double carrier_start_hz = parsed.carrier_base_hz + 5.0;
+    const double carrier_end_hz =
+        parsed.include_hold
+            ? (parsed.carrier_base_hz -
+               (5.0 * static_cast<double>(hold_sec) / static_cast<double>(drop_sec)))
+            : parsed.carrier_base_hz;
+
+    if (request.kind == ProgramKind::kDrop ||
+        request.kind == ProgramKind::kSigmoid) {
+      if (parsed.slide) {
+        std::unique_ptr<SbxCurveProgram, CurveDeleter> curve;
+
+        if (request.kind == ProgramKind::kDrop) {
+          SbxBuiltinDropConfig prog_cfg{};
+          sbx_default_builtin_drop_config(&prog_cfg);
+          fill_program_tone_spec(&prog_cfg.start_tone,
+                                 parsed.is_isochronic,
+                                 parsed.is_monaural,
+                                 carrier_start_hz,
+                                 parsed.beat_start_hz,
+                                 parsed.amp_pct);
+          prog_cfg.carrier_end_hz = carrier_end_hz;
+          prog_cfg.beat_target_hz = parsed.beat_target_hz;
+          prog_cfg.drop_sec = drop_sec;
+          prog_cfg.hold_sec = hold_sec;
+          prog_cfg.wake_sec = wake_sec;
+          prog_cfg.slide = 1;
+          prog_cfg.step_len_sec = parsed.step_len_sec;
+
+          SbxCurveProgram *raw_curve = nullptr;
+          const int build_status =
+              sbx_build_drop_curve_program(&prog_cfg, &raw_curve);
+          curve.reset(raw_curve);
+          if (build_status != SBX_OK || !curve) {
+            return build_context_state_json_locked(
+                build_status != SBX_OK ? build_status : SBX_ENOMEM,
+                "Failed to build the built-in drop runtime.");
+          }
+        } else {
+          SbxBuiltinSigmoidConfig prog_cfg{};
+          sbx_default_builtin_sigmoid_config(&prog_cfg);
+          fill_program_tone_spec(&prog_cfg.start_tone,
+                                 parsed.is_isochronic,
+                                 parsed.is_monaural,
+                                 carrier_start_hz,
+                                 parsed.beat_start_hz,
+                                 parsed.amp_pct);
+          prog_cfg.carrier_end_hz = carrier_end_hz;
+          prog_cfg.beat_target_hz = parsed.beat_target_hz;
+          prog_cfg.drop_sec = drop_sec;
+          prog_cfg.hold_sec = hold_sec;
+          prog_cfg.wake_sec = wake_sec;
+          prog_cfg.slide = 1;
+          prog_cfg.step_len_sec = parsed.step_len_sec;
+          prog_cfg.sig_l = parsed.sig_l;
+          prog_cfg.sig_h = parsed.sig_h;
+
+          SbxCurveProgram *raw_curve = nullptr;
+          const int build_status =
+              sbx_build_sigmoid_curve_program(&prog_cfg, &raw_curve);
+          curve.reset(raw_curve);
+          if (build_status != SBX_OK || !curve) {
+            return build_context_state_json_locked(
+                build_status != SBX_OK ? build_status : SBX_ENOMEM,
+                "Failed to build the built-in sigmoid runtime.");
+          }
+        }
+
+        SbxContext *raw_ctx = sbx_context_create(&config_);
+        if (!raw_ctx) {
+          return build_context_state_json_locked(SBX_ENOMEM,
+                                                 "Failed to create SbxContext.");
+        }
+        std::unique_ptr<SbxContext, ContextDeleter> next_ctx(raw_ctx);
+
+        SbxCurveSourceConfig source_cfg{};
+        sbx_default_curve_source_config(&source_cfg);
+        source_cfg.mode = parsed.is_isochronic
+                              ? SBX_TONE_ISOCHRONIC
+                              : (parsed.is_monaural ? SBX_TONE_MONAURAL
+                                                    : SBX_TONE_BINAURAL);
+        source_cfg.waveform = SBX_WAVE_SINE;
+        source_cfg.amplitude = 1.0;
+        source_cfg.duration_sec =
+            static_cast<double>(main_sec + wake_sec) + 10.0;
+
+        int status = sbx_context_load_curve_program(next_ctx.get(),
+                                                    curve.get(),
+                                                    &source_cfg);
+        if (status != SBX_OK) {
+          const char *error = sbx_context_last_error(next_ctx.get());
+          return build_context_state_json_locked(
+              status,
+              error && error[0] ? error
+                                : "Failed to load the built-in curve runtime.");
+        }
+        curve.release();
+
+        status = sbx_context_configure_runtime(
+            next_ctx.get(), nullptr, 0U, 100.0, nullptr, 0U, nullptr, 0U);
+        if (status != SBX_OK) {
+          const char *error = sbx_context_last_error(next_ctx.get());
+          return build_context_state_json_locked(
+              status,
+              error && error[0]
+                  ? error
+                  : "Failed to configure the built-in curve runtime.");
+        }
+
+        return adopt_context_locked(std::move(next_ctx),
+                                    source_cfg.duration_sec,
+                                    request.mix_path,
+                                    mix_source_name,
+                                    mix_looping,
+                                    mix_samples,
+                                    mix_sample_count);
+      }
+
+      std::unique_ptr<SbxProgramKeyframe, ProgramKeyframesDeleter> frames;
+      size_t frame_count = 0U;
+      int build_status = SBX_OK;
+
+      if (request.kind == ProgramKind::kDrop) {
+        SbxBuiltinDropConfig prog_cfg{};
+        sbx_default_builtin_drop_config(&prog_cfg);
+        fill_program_tone_spec(&prog_cfg.start_tone,
+                               parsed.is_isochronic,
+                               parsed.is_monaural,
+                               carrier_start_hz,
+                               parsed.beat_start_hz,
+                               parsed.amp_pct);
+        prog_cfg.carrier_end_hz = carrier_end_hz;
+        prog_cfg.beat_target_hz = parsed.beat_target_hz;
+        prog_cfg.drop_sec = drop_sec;
+        prog_cfg.hold_sec = hold_sec;
+        prog_cfg.wake_sec = wake_sec;
+        prog_cfg.slide = 0;
+        prog_cfg.step_len_sec = parsed.step_len_sec;
+
+        SbxProgramKeyframe *raw_frames = nullptr;
+        build_status = sbx_build_drop_keyframes(&prog_cfg, &raw_frames, &frame_count);
+        frames.reset(raw_frames);
+      } else {
+        SbxBuiltinSigmoidConfig prog_cfg{};
+        sbx_default_builtin_sigmoid_config(&prog_cfg);
+        fill_program_tone_spec(&prog_cfg.start_tone,
+                               parsed.is_isochronic,
+                               parsed.is_monaural,
+                               carrier_start_hz,
+                               parsed.beat_start_hz,
+                               parsed.amp_pct);
+        prog_cfg.carrier_end_hz = carrier_end_hz;
+        prog_cfg.beat_target_hz = parsed.beat_target_hz;
+        prog_cfg.drop_sec = drop_sec;
+        prog_cfg.hold_sec = hold_sec;
+        prog_cfg.wake_sec = wake_sec;
+        prog_cfg.slide = 0;
+        prog_cfg.step_len_sec = parsed.step_len_sec;
+        prog_cfg.sig_l = parsed.sig_l;
+        prog_cfg.sig_h = parsed.sig_h;
+
+        SbxProgramKeyframe *raw_frames = nullptr;
+        build_status =
+            sbx_build_sigmoid_keyframes(&prog_cfg, &raw_frames, &frame_count);
+        frames.reset(raw_frames);
+      }
+
+      if (build_status != SBX_OK || !frames) {
+        return build_context_state_json_locked(
+            build_status != SBX_OK ? build_status : SBX_ENOMEM,
+            request.kind == ProgramKind::kDrop
+                ? "Failed to build the built-in drop keyframes."
+                : "Failed to build the built-in sigmoid keyframes.");
+      }
+
+      SbxRuntimeContextConfig runtime_cfg{};
+      sbx_default_runtime_context_config(&runtime_cfg);
+      runtime_cfg.engine = config_;
+      runtime_cfg.default_mix_amp_pct = 100.0;
+
+      double duration_sec = 0.0;
+      SbxContext *raw_ctx = nullptr;
+      const int create_status = sbx_runtime_context_create_from_keyframes(
+          frames.get(), frame_count, 0, &runtime_cfg, &duration_sec, &raw_ctx);
+      std::unique_ptr<SbxContext, ContextDeleter> next_ctx(raw_ctx);
+      if (create_status != SBX_OK) {
+        const char *error = raw_ctx ? sbx_context_last_error(raw_ctx) : nullptr;
+        return build_context_state_json_locked(
+            create_status,
+            error && error[0]
+                ? error
+                : (request.kind == ProgramKind::kDrop
+                       ? "Failed to create the built-in drop runtime."
+                       : "Failed to create the built-in sigmoid runtime."));
+      }
+
+      return adopt_context_locked(std::move(next_ctx),
+                                  duration_sec,
+                                  request.mix_path,
+                                  mix_source_name,
+                                  mix_looping,
+                                  mix_samples,
+                                  mix_sample_count);
+    }
+
+    if (trim_ascii(request.curve_text).empty()) {
+      return build_context_state_json_locked(
+          SBX_EINVAL,
+          "The curve program requires .sbgf source text.");
+    }
+
+    std::unique_ptr<SbxCurveProgram, CurveDeleter> curve(sbx_curve_create());
+    if (!curve) {
+      return build_context_state_json_locked(SBX_ENOMEM,
+                                             "Failed to create SbxCurveProgram.");
+    }
+
+    int status = sbx_curve_load_text(curve.get(),
+                                     request.curve_text.c_str(),
+                                     source_name_.c_str());
+    if (status != SBX_OK) {
+      const char *error = sbx_curve_last_error(curve.get());
+      return build_context_state_json_locked(
+          status,
+          error && error[0] ? error : "Failed to load .sbgf curve text.");
+    }
+
+    for (const CurveParameterOverride &override_value : parsed.curve_overrides) {
+      status = sbx_curve_set_param(curve.get(),
+                                   override_value.name.c_str(),
+                                   override_value.value);
+      if (status != SBX_OK) {
+        const char *error = sbx_curve_last_error(curve.get());
+        return build_context_state_json_locked(
+            status,
+            error && error[0]
+                ? error
+                : "Failed to apply a curve parameter override.");
+      }
+    }
+
+    SbxCurveEvalConfig eval_cfg{};
+    sbx_default_curve_eval_config(&eval_cfg);
+    eval_cfg.carrier_start_hz = carrier_start_hz;
+    eval_cfg.carrier_end_hz = carrier_end_hz;
+    eval_cfg.carrier_span_sec = static_cast<double>(main_sec);
+    eval_cfg.beat_start_hz = parsed.beat_start_hz;
+    eval_cfg.beat_target_hz = parsed.beat_target_hz;
+    eval_cfg.beat_span_sec = static_cast<double>(drop_sec);
+    eval_cfg.hold_min = static_cast<double>(hold_sec) / 60.0;
+    eval_cfg.total_min = static_cast<double>(main_sec) / 60.0;
+    eval_cfg.wake_min = static_cast<double>(wake_sec) / 60.0;
+    eval_cfg.beat_amp0_pct = parsed.amp_pct;
+    eval_cfg.mix_amp0_pct = 100.0;
+
+    status = sbx_curve_prepare(curve.get(), &eval_cfg);
+    if (status != SBX_OK) {
+      const char *error = sbx_curve_last_error(curve.get());
+      return build_context_state_json_locked(
+          status,
+          error && error[0] ? error : "Failed to prepare the .sbgf curve.");
+    }
+
+    if (parsed.slide) {
+      SbxContext *raw_ctx = sbx_context_create(&config_);
+      if (!raw_ctx) {
+        return build_context_state_json_locked(SBX_ENOMEM,
+                                               "Failed to create SbxContext.");
+      }
+      std::unique_ptr<SbxContext, ContextDeleter> next_ctx(raw_ctx);
+
+      SbxCurveSourceConfig source_cfg{};
+      sbx_default_curve_source_config(&source_cfg);
+      source_cfg.mode = parsed.is_isochronic
+                            ? SBX_TONE_ISOCHRONIC
+                            : (parsed.is_monaural ? SBX_TONE_MONAURAL
+                                                  : SBX_TONE_BINAURAL);
+      source_cfg.waveform = SBX_WAVE_SINE;
+      source_cfg.amplitude = 1.0;
+      source_cfg.duration_sec = static_cast<double>(main_sec + wake_sec) + 10.0;
+
+      status =
+          sbx_context_load_curve_program(next_ctx.get(), curve.get(), &source_cfg);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        return build_context_state_json_locked(
+            status,
+            error && error[0] ? error
+                              : "Failed to load the exact curve runtime.");
+      }
+      curve.release();
+
+      status = sbx_context_configure_runtime(
+          next_ctx.get(), nullptr, 0U, 100.0, nullptr, 0U, nullptr, 0U);
+      if (status != SBX_OK) {
+        const char *error = sbx_context_last_error(next_ctx.get());
+        return build_context_state_json_locked(
+            status,
+            error && error[0]
+                ? error
+                : "Failed to configure the exact curve runtime.");
+      }
+
+      return adopt_context_locked(std::move(next_ctx),
+                                  source_cfg.duration_sec,
+                                  request.mix_path,
+                                  mix_source_name,
+                                  mix_looping,
+                                  mix_samples,
+                                  mix_sample_count);
+    }
+
+    SbxCurveTimeline timeline{};
+    SbxCurveTimelineConfig timeline_cfg{};
+    sbx_default_curve_timeline_config(&timeline_cfg);
+    fill_program_tone_spec(&timeline_cfg.start_tone,
+                           parsed.is_isochronic,
+                           parsed.is_monaural,
+                           carrier_start_hz,
+                           parsed.beat_start_hz,
+                           parsed.amp_pct);
+    timeline_cfg.sample_span_sec = drop_sec;
+    timeline_cfg.main_span_sec = main_sec;
+    timeline_cfg.wake_sec = wake_sec;
+    timeline_cfg.step_len_sec = parsed.step_len_sec;
+    timeline_cfg.slide = 0;
+    timeline_cfg.mute_program_tone = parsed.mute_program_tone ? 1 : 0;
+
+    status = sbx_build_curve_timeline(curve.get(), &timeline_cfg, &timeline);
+    if (status != SBX_OK) {
+      const char *error = sbx_curve_last_error(curve.get());
+      return build_context_state_json_locked(
+          status,
+          error && error[0]
+              ? error
+              : "Failed to build the stepped curve timeline.");
+    }
+
+    SbxRuntimeContextConfig runtime_cfg{};
+    sbx_default_runtime_context_config(&runtime_cfg);
+    runtime_cfg.engine = config_;
+    runtime_cfg.mix_kfs = timeline.mix_frames;
+    runtime_cfg.mix_kf_count = timeline.mix_frame_count;
+    runtime_cfg.default_mix_amp_pct = 100.0;
+
+    double duration_sec = 0.0;
+    SbxContext *raw_ctx = nullptr;
+    const int create_status = sbx_runtime_context_create_from_keyframes(
+        timeline.program_frames,
+        timeline.program_frame_count,
+        0,
+        &runtime_cfg,
+        &duration_sec,
+        &raw_ctx);
+    std::unique_ptr<SbxContext, ContextDeleter> next_ctx(raw_ctx);
+    sbx_free_curve_timeline(&timeline);
+    if (create_status != SBX_OK) {
+      const char *error = raw_ctx ? sbx_context_last_error(raw_ctx) : nullptr;
+      return build_context_state_json_locked(
+          create_status,
+          error && error[0]
+              ? error
+              : "Failed to create the stepped curve runtime.");
+    }
+
+    return adopt_context_locked(std::move(next_ctx),
+                                duration_sec,
+                                request.mix_path,
+                                mix_source_name,
+                                mix_looping,
+                                mix_samples,
+                                mix_sample_count);
+  }
+
   std::string prepare_sbg_context_impl(const std::string &text,
                                        const std::string &source_name,
                                        const int16_t *mix_samples,
@@ -976,6 +2040,45 @@ std::string inspect_sbg_runtime_json(const std::string &text,
                                        error);
 }
 
+bool make_program_request(const std::string &program_kind,
+                          const std::string &main_arg,
+                          int drop_time_sec,
+                          int hold_time_sec,
+                          int wake_time_sec,
+                          const std::string &curve_text,
+                          const std::string &source_name,
+                          const std::string &mix_path,
+                          ProgramRequest *out,
+                          std::string *error_out) {
+  if (!out) {
+    if (error_out) {
+      *error_out = "Internal program request error.";
+    }
+    return false;
+  }
+
+  ProgramKind kind = ProgramKind::kDrop;
+  if (!parse_program_kind(program_kind, &kind)) {
+    if (error_out) {
+      *error_out = "Unknown built-in program selection.";
+    }
+    return false;
+  }
+
+  ProgramRequest request;
+  request.kind = kind;
+  request.main_arg = main_arg;
+  request.drop_time_sec = drop_time_sec;
+  request.hold_time_sec = hold_time_sec;
+  request.wake_time_sec = wake_time_sec;
+  request.curve_text = curve_text;
+  request.source_name =
+      source_name.empty() ? program_default_source_name(kind) : source_name;
+  request.mix_path = mix_path;
+  *out = std::move(request);
+  return true;
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -1064,6 +2167,108 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareSbgContextStreaming(
       runtime_state().prepare_sbg_context_streaming(
           jstring_to_utf8(env, text),
           jstring_to_utf8(env, source_name),
+          jstring_to_utf8(env, mix_source_name),
+          mix_looping == JNI_TRUE));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareProgramContext(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring program_kind,
+    jstring main_arg,
+    jint drop_time_sec,
+    jint hold_time_sec,
+    jint wake_time_sec,
+    jstring curve_text,
+    jstring source_name,
+    jstring mix_path,
+    jshortArray mix_samples,
+    jstring mix_source_name,
+    jboolean mix_looping) {
+  ProgramRequest request;
+  std::string request_error;
+  if (!make_program_request(jstring_to_utf8(env, program_kind),
+                            jstring_to_utf8(env, main_arg),
+                            static_cast<int>(drop_time_sec),
+                            static_cast<int>(hold_time_sec),
+                            static_cast<int>(wake_time_sec),
+                            jstring_to_utf8(env, curve_text),
+                            jstring_to_utf8(env, source_name),
+                            jstring_to_utf8(env, mix_path),
+                            &request,
+                            &request_error)) {
+    return to_jstring(env,
+                      build_sbg_runtime_config_json(
+                          SBX_EINVAL,
+                          jstring_to_utf8(env, source_name),
+                          44100.0,
+                          jstring_to_utf8(env, mix_path),
+                          request_error));
+  }
+
+  std::vector<int16_t> mix_copy;
+  if (mix_samples) {
+    const jsize mix_count = env->GetArrayLength(mix_samples);
+    if (mix_count > 0) {
+      mix_copy.resize(static_cast<size_t>(mix_count));
+      env->GetShortArrayRegion(mix_samples,
+                               0,
+                               mix_count,
+                               reinterpret_cast<jshort *>(mix_copy.data()));
+    }
+  }
+
+  return to_jstring(env,
+                    runtime_state().prepare_program_context(
+                        request,
+                        mix_copy.empty() ? nullptr : mix_copy.data(),
+                        mix_copy.size(),
+                        jstring_to_utf8(env, mix_source_name),
+                        mix_looping == JNI_TRUE));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareProgramContextStreaming(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring program_kind,
+    jstring main_arg,
+    jint drop_time_sec,
+    jint hold_time_sec,
+    jint wake_time_sec,
+    jstring curve_text,
+    jstring source_name,
+    jstring mix_path,
+    jstring mix_source_name,
+    jboolean mix_looping) {
+  ProgramRequest request;
+  std::string request_error;
+  const std::string safe_source_name = jstring_to_utf8(env, source_name);
+  const std::string safe_mix_path = jstring_to_utf8(env, mix_path);
+  if (!make_program_request(jstring_to_utf8(env, program_kind),
+                            jstring_to_utf8(env, main_arg),
+                            static_cast<int>(drop_time_sec),
+                            static_cast<int>(hold_time_sec),
+                            static_cast<int>(wake_time_sec),
+                            jstring_to_utf8(env, curve_text),
+                            safe_source_name,
+                            safe_mix_path,
+                            &request,
+                            &request_error)) {
+    return to_jstring(
+        env,
+        build_sbg_runtime_config_json(SBX_EINVAL,
+                                      safe_source_name,
+                                      44100.0,
+                                      safe_mix_path,
+                                      request_error));
+  }
+
+  return to_jstring(
+      env,
+      runtime_state().prepare_program_context_streaming(
+          request,
           jstring_to_utf8(env, mix_source_name),
           mix_looping == JNI_TRUE));
 }

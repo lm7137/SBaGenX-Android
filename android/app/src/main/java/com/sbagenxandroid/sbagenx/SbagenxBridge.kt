@@ -28,6 +28,33 @@ object SbagenxBridge {
       mixLooping: Boolean,
   ): String
 
+  external fun nativePrepareProgramContext(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String,
+      mixPath: String,
+      mixSamples: ShortArray?,
+      mixSourceName: String,
+      mixLooping: Boolean,
+  ): String
+
+  external fun nativePrepareProgramContextStreaming(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String,
+      mixPath: String,
+      mixSourceName: String,
+      mixLooping: Boolean,
+  ): String
+
   external fun nativeGetContextState(): String
 
   external fun nativeRenderPreview(frameCount: Int, sampleValueCount: Int): String

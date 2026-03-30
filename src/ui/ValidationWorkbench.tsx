@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   Modal,
   Pressable,
   ScrollView,
+  type StyleProp,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -19,13 +21,14 @@ import {
   inferDocumentKind,
   isNativeBridgeAvailable,
   listDocuments,
-  loadDocument,
   pickDocumentToLoad,
   pickLibraryFolder,
   pickMixInput,
+  prepareProgramContext,
   prepareSbgContext,
   renderPreview,
   saveDocument,
+  startProgramPlayback,
   startPlayback,
   stopPlayback,
     type BridgeInfo,
@@ -34,8 +37,9 @@ import {
     type DocumentStoreInfo,
     type DocumentKind,
     type PlaybackState,
+  type ProgramKind,
+  type ProgramRuntimeRequest,
   type RenderPreviewResult,
-  type SavedDocumentSummary,
   type SbaGenXDiagnostic,
   validateDocument,
 } from '../native/sbagenx';
@@ -46,13 +50,24 @@ const brandIcon = require('../assets/sbagenx-icon.png');
 const heroBlueOrb = require('../assets/hero-blue-orb.png');
 const heroPinkOrb = require('../assets/hero-pink-orb.png');
 
-const SURFACE_SOFT = 'rgba(224, 224, 216, 0.96)';
-const SURFACE_GLASS = SURFACE_SOFT;
-const SURFACE_BORDER = SURFACE_SOFT;
-const SURFACE_BORDER_LIGHT = SURFACE_SOFT;
+const SURFACE_SOFT = 'rgba(235, 235, 229, 0.84)';
+const SURFACE_GLASS = 'rgba(232, 232, 226, 0.74)';
+const SURFACE_BORDER = 'rgba(255, 255, 255, 0.08)';
+const SURFACE_BORDER_LIGHT = SURFACE_GLASS;
 
 const DEFAULT_SBG_NAME = 'examples/plus/deep-sleep-aid.sbg';
 const DEFAULT_SBGF_NAME = 'examples/basics/curve-expfit-solve-demo.sbgf';
+const DEFAULT_PROGRAM_TIMES = {
+  dropMinutes: '30',
+  holdMinutes: '30',
+  wakeMinutes: '3',
+};
+const DEFAULT_PROGRAM_MAIN_ARGS: Record<ProgramKind, string> = {
+  drop: '00s+^',
+  sigmoid: '00s+^:l=0.125',
+  slide: '200+10/20',
+  curve: '00ls:l=0.15',
+};
 
 const VALID_SBG_SAMPLE =
   '## Deep Sleep Aid - 45 minutes\n' +
@@ -76,8 +91,6 @@ const VALID_SBG_SAMPLE =
   '00:44:00 ts-deep-sleep ->\n' +
   '00:45:00 off\n';
 
-const INVALID_SBG_SAMPLE = '-SE\n-Z nope\n\nalloff: -\n\nNOW alloff\n';
-
 const VALID_SBGF_SAMPLE =
   '# SBaGenX custom curve example (.sbgf)\n' +
   '# Exponential beat curve with constants solved from boundary conditions.\n' +
@@ -89,30 +102,7 @@ const VALID_SBGF_SAMPLE =
   'beat = A*exp(-l*m) + C\n' +
   'carrier = c0 + (c1-c0) * ramp(m,0,T)\n';
 
-const INVALID_SBGF_SAMPLE = 'title "broken"\nbeat =\n';
-
-const DOCUMENT_PRESETS: Record<
-  DocumentKind,
-  {
-    sample: string;
-    sampleName: string;
-    broken: string;
-    brokenName: string;
-  }
-> = {
-  sbg: {
-    sample: VALID_SBG_SAMPLE,
-    sampleName: DEFAULT_SBG_NAME,
-    broken: INVALID_SBG_SAMPLE,
-    brokenName: 'scratch.sbg',
-  },
-  sbgf: {
-    sample: VALID_SBGF_SAMPLE,
-    sampleName: DEFAULT_SBGF_NAME,
-    broken: INVALID_SBGF_SAMPLE,
-    brokenName: 'scratch.sbgf',
-  },
-};
+type RuntimeMode = 'sequence' | 'program';
 
 type ActionTone = 'primary' | 'ghost';
 
@@ -128,22 +118,10 @@ type MetricCardProps = {
   value: string;
 };
 
-type DocumentBrowserDirectoryEntry = {
-  kind: 'directory';
-  name: string;
-  path: string;
+type GlassCardProps = {
+  children: ReactNode;
+  style?: StyleProp<ViewStyle>;
 };
-
-type DocumentBrowserFileEntry = {
-  kind: 'file';
-  name: string;
-  path: string;
-  document: SavedDocumentSummary;
-};
-
-type DocumentBrowserEntry =
-  | DocumentBrowserDirectoryEntry
-  | DocumentBrowserFileEntry;
 
 function formatSpan(diagnostic: SbaGenXDiagnostic): string {
   return `${diagnostic.line}:${diagnostic.column} -> ${diagnostic.endLine}:${diagnostic.endColumn}`;
@@ -151,18 +129,6 @@ function formatSpan(diagnostic: SbaGenXDiagnostic): string {
 
 function formatSeconds(value: number): string {
   return `${value.toFixed(2)}s`;
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-
-  return `${(value / 1024).toFixed(1)} KB`;
-}
-
-function formatTimestamp(value: number): string {
-  return new Date(value).toLocaleString();
 }
 
 function formatCurveValue(value: number): string {
@@ -272,71 +238,26 @@ function summarizeMixReference(mixPath: string): string {
   }
 }
 
-function parentDocumentDirectory(path: string): string | null {
-  if (!path) {
-    return null;
+function programKindLabel(programKind: ProgramKind): string {
+  switch (programKind) {
+    case 'drop':
+      return 'drop';
+    case 'sigmoid':
+      return 'sigmoid';
+    case 'slide':
+      return 'slide';
+    case 'curve':
+      return 'curve';
   }
-
-  const segments = path.split('/').filter(Boolean);
-  if (segments.length <= 1) {
-    return '';
-  }
-
-  return segments.slice(0, -1).join('/');
 }
 
-function listDocumentBrowserEntries(
-  documents: SavedDocumentSummary[],
-  directoryPath: string,
-): DocumentBrowserEntry[] {
-  const normalizedDirectory = directoryPath.trim().replace(/^\/+|\/+$/g, '');
-  const prefix = normalizedDirectory ? `${normalizedDirectory}/` : '';
-  const directories = new Map<string, DocumentBrowserDirectoryEntry>();
-  const files: DocumentBrowserFileEntry[] = [];
+function parseMinutesField(value: string, fallbackMinutes: number): number {
+  const parsed = Number.parseFloat(value.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallbackMinutes * 60;
+  }
 
-  documents.forEach(document => {
-    if (prefix && !document.name.startsWith(prefix)) {
-      return;
-    }
-
-    const remainder = prefix
-      ? document.name.slice(prefix.length)
-      : document.name;
-
-    if (!remainder) {
-      return;
-    }
-
-    const slashIndex = remainder.indexOf('/');
-    if (slashIndex >= 0) {
-      const directoryName = remainder.slice(0, slashIndex);
-      const path = prefix ? `${normalizedDirectory}/${directoryName}` : directoryName;
-      directories.set(directoryName, {
-        kind: 'directory',
-        name: directoryName,
-        path,
-      });
-      return;
-    }
-
-    files.push({
-      kind: 'file',
-      name: remainder,
-      path: document.name,
-      document,
-    });
-  });
-
-  const compareNames = (left: { name: string }, right: { name: string }) =>
-    left.name.localeCompare(right.name, undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    });
-
-  return [
-    ...Array.from(directories.values()).sort(compareNames),
-    ...files.sort(compareNames),
-  ];
+  return Math.round(parsed * 60);
 }
 
 function ActionButton({
@@ -376,12 +297,20 @@ function ActionButton({
   );
 }
 
+function GlassCard({ children, style }: GlassCardProps) {
+  return (
+    <View style={[styles.card, styles.cardGlass, style]}>
+      {children}
+    </View>
+  );
+}
+
 function MetricCard({ label, value }: MetricCardProps) {
   return (
-    <View style={[styles.card, styles.cardGlass, styles.metricCard]}>
+    <GlassCard style={styles.metricCard}>
       <Text style={styles.metricLabel}>{label}</Text>
       <Text style={styles.metricValue}>{value}</Text>
-    </View>
+    </GlassCard>
   );
 }
 
@@ -400,9 +329,28 @@ function HeroChip({ label }: HeroChipProps) {
 */
 
 export function ValidationWorkbench() {
-  const [documentKind, setDocumentKind] = useState<DocumentKind>('sbg');
-  const [fileName, setFileName] = useState(DOCUMENT_PRESETS.sbg.sampleName);
-  const [text, setText] = useState(DOCUMENT_PRESETS.sbg.sample);
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>('program');
+  const [programKind, setProgramKind] = useState<ProgramKind>('drop');
+  const [sequenceFileName, setSequenceFileName] = useState(DEFAULT_SBG_NAME);
+  const [sequenceText, setSequenceText] = useState(VALID_SBG_SAMPLE);
+  const [sequenceSourceName, setSequenceSourceName] = useState<string | null>(
+    null,
+  );
+  const [curveFileName, setCurveFileName] = useState(DEFAULT_SBGF_NAME);
+  const [curveText, setCurveText] = useState(VALID_SBGF_SAMPLE);
+  const [curveSourceName, setCurveSourceName] = useState<string | null>(null);
+  const [programMainArgs, setProgramMainArgs] = useState<Record<ProgramKind, string>>(
+    DEFAULT_PROGRAM_MAIN_ARGS,
+  );
+  const [programDropMinutes, setProgramDropMinutes] = useState(
+    DEFAULT_PROGRAM_TIMES.dropMinutes,
+  );
+  const [programHoldMinutes, setProgramHoldMinutes] = useState(
+    DEFAULT_PROGRAM_TIMES.holdMinutes,
+  );
+  const [programWakeMinutes, setProgramWakeMinutes] = useState(
+    DEFAULT_PROGRAM_TIMES.wakeMinutes,
+  );
   const [bridgeInfo, setBridgeInfo] = useState<BridgeInfo | null>(null);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
   const [validationState, setValidationState] = useState(
@@ -417,19 +365,19 @@ export function ValidationWorkbench() {
   const [playbackState, setPlaybackState] = useState<PlaybackState | null>(
     null,
   );
-  const [documents, setDocuments] = useState<SavedDocumentSummary[]>([]);
   const [documentStoreInfo, setDocumentStoreInfo] =
     useState<DocumentStoreInfo | null>(null);
-  const [documentSourceName, setDocumentSourceName] = useState<string | null>(
-    null,
-  );
   const [isRendering, setIsRendering] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlayingAction, setIsPlayingAction] = useState(false);
-  const [mixDisplayName, setMixDisplayName] = useState<string | null>(null);
-  const [isLoadBrowserVisible, setIsLoadBrowserVisible] = useState(false);
-  const [isLoadBrowserLoading, setIsLoadBrowserLoading] = useState(false);
-  const [loadBrowserPath, setLoadBrowserPath] = useState('');
+  const [sequenceMixDisplayName, setSequenceMixDisplayName] = useState<string | null>(
+    null,
+  );
+  const [programMixPath, setProgramMixPath] = useState<string | null>(null);
+  const [programMixDisplayName, setProgramMixDisplayName] = useState<string | null>(
+    null,
+  );
+  const [isProgramPickerVisible, setIsProgramPickerVisible] = useState(false);
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
 
@@ -520,34 +468,39 @@ export function ValidationWorkbench() {
   }, []);
 
   const nativeAvailability = useMemo(() => isNativeBridgeAvailable(), []);
-  const resolvedName = ensureDocumentName(fileName, documentKind);
-  const mixPathInText = useMemo(() => {
-    if (documentKind !== 'sbg') {
-      return null;
-    }
-
-    return findSafePreambleMixPath(text);
-  }, [documentKind, text]);
-  const loadBrowserEntries = useMemo(
-    () => listDocumentBrowserEntries(documents, loadBrowserPath),
-    [documents, loadBrowserPath],
+  const sequenceResolvedName = ensureDocumentName(sequenceFileName, 'sbg');
+  const curveResolvedName = ensureDocumentName(curveFileName, 'sbgf');
+  const activeDocumentKind: DocumentKind | null =
+    runtimeMode === 'sequence'
+      ? 'sbg'
+      : programKind === 'curve'
+      ? 'sbgf'
+      : null;
+  const activeResolvedName =
+    activeDocumentKind === 'sbg'
+      ? sequenceResolvedName
+      : activeDocumentKind === 'sbgf'
+      ? curveResolvedName
+      : null;
+  const activeText =
+    activeDocumentKind === 'sbg'
+      ? sequenceText
+      : activeDocumentKind === 'sbgf'
+      ? curveText
+      : '';
+  const activeSourceName =
+    runtimeMode === 'sequence'
+      ? sequenceSourceName ?? sequenceResolvedName
+      : programKind === 'curve'
+      ? curveSourceName ?? curveResolvedName
+      : `program:${programKind}`;
+  const sequenceMixPathInText = useMemo(
+    () => findSafePreambleMixPath(sequenceText),
+    [sequenceText],
   );
-  const loadBrowserParentPath = useMemo(
-    () => parentDocumentDirectory(loadBrowserPath),
-    [loadBrowserPath],
-  );
-  const loadBrowserSegments = useMemo(
-    () => loadBrowserPath.split('/').filter(Boolean),
-    [loadBrowserPath],
-  );
+  const currentProgramMainArg = programMainArgs[programKind];
   const documentStoreLabel = documentStoreInfo?.label ?? 'App sandbox';
   const isUsingLibraryFolder = documentStoreInfo?.mode === 'library';
-
-  async function refreshDocuments() {
-    setDocuments(await listDocuments());
-  }
-
-  const effectiveSourceName = documentSourceName ?? resolvedName;
 
   async function handleRefreshFiles() {
     try {
@@ -555,9 +508,12 @@ export function ValidationWorkbench() {
         listDocuments(),
         getDocumentStoreInfo(),
       ]);
-      setDocuments(docs);
       setDocumentStoreInfo(storeInfo);
-      setValidationState('Refreshed file list.');
+      setValidationState(
+        `Refreshed files. Indexed ${docs.length} document${
+          docs.length === 1 ? '' : 's'
+        } in ${storeInfo.label}.`,
+      );
     } catch (error) {
       setBridgeError(
         error instanceof Error ? error.message : 'Failed to refresh file list.',
@@ -616,49 +572,58 @@ export function ValidationWorkbench() {
     }
   }
 
-  /*
-  async function handlePrepareContext() {
-    if (documentKind !== 'sbg') {
-      setValidationState(
-        'Render context preparation is only available for .sbg.',
-      );
-      return;
-    }
-
-    setIsPreparing(true);
-
-    try {
-      const nextContext = await prepareSbgContext(text, effectiveSourceName);
-      setContextState(nextContext);
-      setPreviewState(null);
-      setBridgeError(nextContext.error || null);
-      setValidationState(
-        nextContext.status === 0
-          ? 'Prepared persistent render context.'
-          : `Context prepare failed: ${
-              nextContext.error || nextContext.statusText
-            }`,
-      );
-    } catch (error) {
-      setBridgeError(
-        error instanceof Error ? error.message : 'Failed to prepare context.',
-      );
-    } finally {
-      setIsPreparing(false);
-    }
+  function buildProgramRequest(): ProgramRuntimeRequest {
+    return {
+      programKind,
+      mainArg: currentProgramMainArg,
+      dropTimeSec: parseMinutesField(programDropMinutes, 30),
+      holdTimeSec: parseMinutesField(programHoldMinutes, 30),
+      wakeTimeSec: parseMinutesField(programWakeMinutes, 3),
+      curveText: programKind === 'curve' ? curveText : null,
+      sourceName:
+        programKind === 'curve'
+          ? curveSourceName ?? curveResolvedName
+          : `program:${programKind}`,
+      mixPath: programMixPath,
+    };
   }
-  */
+
+  function applyLoadedDocument(
+    name: string,
+    loadedText: string,
+    sourceName?: string,
+  ) {
+    const nextKind = inferDocumentKind(name);
+    setDiagnostics([]);
+    setCurveInfo(null);
+    setPreviewState(null);
+    setBridgeError(null);
+
+    if (nextKind === 'sbg') {
+      setRuntimeMode('sequence');
+      setSequenceFileName(name);
+      setSequenceSourceName(sourceName ?? name);
+      setSequenceText(loadedText);
+      setSequenceMixDisplayName(null);
+    } else {
+      setRuntimeMode('program');
+      setProgramKind('curve');
+      setCurveFileName(name);
+      setCurveSourceName(sourceName ?? name);
+      setCurveText(loadedText);
+    }
+
+    setValidationState(`Loaded ${name}.`);
+  }
 
   async function handleRenderPreview() {
-    if (documentKind !== 'sbg') {
-      setValidationState('Render preview is only available for .sbg.');
-      return;
-    }
-
     setIsRendering(true);
 
     try {
-      const nextContext = await prepareSbgContext(text, resolvedName);
+      const nextContext =
+        runtimeMode === 'sequence'
+          ? await prepareSbgContext(sequenceText, activeSourceName)
+          : await prepareProgramContext(buildProgramRequest());
       setContextState(nextContext);
 
       if (nextContext.status !== 0 || !nextContext.prepared) {
@@ -688,32 +653,16 @@ export function ValidationWorkbench() {
     }
   }
 
-  /*
-  async function handleResetContext() {
-    try {
-      const nextContext = await resetContext();
-      setContextState(nextContext);
-      setValidationState('Reset persistent render context to time 0.');
-    } catch (error) {
-      setBridgeError(
-        error instanceof Error ? error.message : 'Failed to reset context.',
-      );
-    }
-  }
-  */
-
   async function handleStartPlayback() {
-    if (documentKind !== 'sbg') {
-      setValidationState('Playback is only available for .sbg.');
-      return;
-    }
-
     setIsPlayingAction(true);
     setBridgeError(null);
     setValidationState('Starting native playback...');
 
     try {
-      const nextState = await startPlayback(text, effectiveSourceName);
+      const nextState =
+        runtimeMode === 'sequence'
+          ? await startPlayback(sequenceText, activeSourceName)
+          : await startProgramPlayback(buildProgramRequest());
       setPlaybackState(nextState);
       setBridgeError(nextState.lastError || null);
       setValidationState(
@@ -749,15 +698,24 @@ export function ValidationWorkbench() {
   }
 
   async function handleSaveDocument() {
+    if (!activeDocumentKind || !activeResolvedName) {
+      setValidationState('Only sequence files and curve files can be saved.');
+      return;
+    }
+
     setIsSaving(true);
     setBridgeError(null);
     setValidationState('Saving document...');
 
     try {
-      const saved = await saveDocument(resolvedName, text);
-      setFileName(saved.name);
-      setDocumentSourceName(saved.sourceName ?? saved.name);
-      await refreshDocuments();
+      const saved = await saveDocument(activeResolvedName, activeText);
+      if (activeDocumentKind === 'sbg') {
+        setSequenceFileName(saved.name);
+        setSequenceSourceName(saved.sourceName ?? saved.name);
+      } else {
+        setCurveFileName(saved.name);
+        setCurveSourceName(saved.sourceName ?? saved.name);
+      }
       setValidationState(
         `Saved ${saved.name} to ${
           documentStoreInfo?.mode === 'library'
@@ -774,32 +732,9 @@ export function ValidationWorkbench() {
     }
   }
 
-  async function handleLoadDocument(name: string) {
-    try {
-      const loaded = await loadDocument(name);
-      const nextKind = inferDocumentKind(loaded.name);
-      setDocumentKind(nextKind);
-      setFileName(loaded.name);
-      setDocumentSourceName(loaded.sourceName ?? loaded.name);
-      setText(loaded.text);
-      setMixDisplayName(null);
-      setDiagnostics([]);
-      setCurveInfo(null);
-      setPreviewState(null);
-      setValidationState(`Loaded ${loaded.name}.`);
-    } catch (error) {
-      setBridgeError(
-        error instanceof Error ? error.message : 'Failed to load document.',
-      );
-    }
-  }
-
   async function handleOpenLoadBrowser() {
     try {
       setBridgeError(null);
-      setLoadBrowserPath('');
-      setIsLoadBrowserVisible(false);
-      setIsLoadBrowserLoading(false);
       setValidationState('Opening Android document picker...');
       const picked = await pickDocumentToLoad();
       if (!picked) {
@@ -807,16 +742,7 @@ export function ValidationWorkbench() {
         return;
       }
 
-      const nextKind = inferDocumentKind(picked.name);
-      setDocumentKind(nextKind);
-      setFileName(picked.name);
-      setDocumentSourceName(picked.sourceName ?? picked.name);
-      setText(picked.text);
-      setMixDisplayName(null);
-      setDiagnostics([]);
-      setCurveInfo(null);
-      setPreviewState(null);
-      setValidationState(`Loaded ${picked.name}.`);
+      applyLoadedDocument(picked.name, picked.text, picked.sourceName);
     } catch (error) {
       setBridgeError(
         error instanceof Error ? error.message : 'Failed to open document picker.',
@@ -824,17 +750,10 @@ export function ValidationWorkbench() {
     }
   }
 
-  async function handleLoadFromBrowser(name: string) {
-    setIsLoadBrowserVisible(false);
-    setLoadBrowserPath('');
-    await handleLoadDocument(name);
-  }
-
   async function handlePickLibraryFolder() {
     try {
       const storeInfo = await pickLibraryFolder();
       setDocumentStoreInfo(storeInfo);
-      await refreshDocuments();
       setValidationState(
         storeInfo.mode === 'library'
           ? `Using ${storeInfo.label} for saved documents.`
@@ -847,32 +766,6 @@ export function ValidationWorkbench() {
     }
   }
 
-  async function loadPreset(nextKind: DocumentKind, preset: 'sample' | 'broken') {
-    const targetName =
-      preset === 'sample'
-        ? DOCUMENT_PRESETS[nextKind].sampleName
-        : DOCUMENT_PRESETS[nextKind].brokenName;
-
-    if (preset === 'sample' && documents.some(document => document.name === targetName)) {
-      await handleLoadDocument(targetName);
-      return;
-    }
-
-    setDocumentKind(nextKind);
-    setFileName(targetName);
-    setDocumentSourceName(null);
-    setText(DOCUMENT_PRESETS[nextKind][preset]);
-    setMixDisplayName(null);
-    setDiagnostics([]);
-    setCurveInfo(null);
-    setPreviewState(null);
-    setValidationState(
-      preset === 'sample'
-        ? 'Loaded a valid sample document.'
-        : 'Loaded a broken sample document.',
-    );
-  }
-
   const samplePreview =
     previewState?.samples
       .slice(0, 24)
@@ -880,8 +773,12 @@ export function ValidationWorkbench() {
       .join(', ') ?? '';
 
   function handleEditorTextChange(nextText: string) {
-    setText(nextText);
-    setMixDisplayName(null);
+    if (activeDocumentKind === 'sbg') {
+      setSequenceText(nextText);
+      setSequenceMixDisplayName(null);
+    } else if (activeDocumentKind === 'sbgf') {
+      setCurveText(nextText);
+    }
     setDiagnostics([]);
     setCurveInfo(null);
     setPreviewState(null);
@@ -890,11 +787,6 @@ export function ValidationWorkbench() {
   }
 
   async function handleAddMix() {
-    if (documentKind !== 'sbg') {
-      setValidationState('Mix files can only be attached to .sbg documents.');
-      return;
-    }
-
     try {
       setBridgeError(null);
       setValidationState('Opening Android file picker...');
@@ -904,20 +796,31 @@ export function ValidationWorkbench() {
         return;
       }
 
-      const nextText = upsertSafePreambleMixPath(text, picked.uri);
-      const replacedExistingMix = Boolean(mixPathInText);
+      if (runtimeMode === 'sequence') {
+        const nextText = upsertSafePreambleMixPath(sequenceText, picked.uri);
+        const replacedExistingMix = Boolean(sequenceMixPathInText);
 
-      setText(nextText);
-      setMixDisplayName(picked.displayName || null);
+        setSequenceText(nextText);
+        setSequenceMixDisplayName(picked.displayName || null);
+        setValidationState(
+          `${
+            replacedExistingMix ? 'Updated' : 'Added'
+          } mix reference for ${picked.displayName || picked.uri}.`,
+        );
+      } else {
+        setProgramMixPath(picked.uri);
+        setProgramMixDisplayName(picked.displayName || null);
+        setValidationState(
+          `Selected mix input ${picked.displayName || picked.uri} for the ${programKindLabel(
+            programKind,
+          )} program.`,
+        );
+      }
+
       setDiagnostics([]);
       setCurveInfo(null);
       setPreviewState(null);
       setBridgeError(null);
-      setValidationState(
-        `${
-          replacedExistingMix ? 'Updated' : 'Added'
-        } mix reference for ${picked.displayName || picked.uri}.`,
-      );
     } catch (error) {
       setBridgeError(
         error instanceof Error ? error.message : 'Failed to pick mix file.',
@@ -943,14 +846,35 @@ export function ValidationWorkbench() {
       return;
     }
 
+    if (!activeDocumentKind || !activeResolvedName) {
+      validationRequestIdRef.current += 1;
+      setDiagnostics([]);
+      setCurveInfo(null);
+      setBridgeError(null);
+      setValidationState(
+        'Built-in program mode uses direct program arguments. Curve validation appears here only when the curve editor is active.',
+      );
+      return;
+    }
+
     const timeoutId = setTimeout(() => {
-      runValidationFor(documentKind, text, effectiveSourceName).catch(() => {});
+      runValidationFor(
+        activeDocumentKind,
+        activeText,
+        activeSourceName,
+      ).catch(() => {});
     }, 180);
 
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [documentKind, effectiveSourceName, nativeAvailability, text]);
+  }, [
+    activeDocumentKind,
+    activeResolvedName,
+    activeSourceName,
+    activeText,
+    nativeAvailability,
+  ]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -963,7 +887,7 @@ export function ValidationWorkbench() {
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={[styles.card, styles.cardSoft, styles.heroCard]}>
+          <GlassCard style={styles.heroCard}>
             <Image source={heroBlueOrb} style={styles.heroAccentBlue} />
             <Image source={heroPinkOrb} style={styles.heroAccentPink} />
 
@@ -1027,7 +951,7 @@ export function ValidationWorkbench() {
               </Text>
             </View>
             */}
-          </View>
+          </GlassCard>
 
           {showDeveloperTools ? (
             <View style={styles.metricsGrid}>
@@ -1091,134 +1015,301 @@ export function ValidationWorkbench() {
             </View>
           ) : null}
 
-          <View style={[styles.card, styles.cardGlass, styles.panel]}>
-            <Text style={styles.panelKicker}>Document</Text>
-            <Text style={styles.panelTitle}>Editor and files</Text>
+          <GlassCard style={styles.panel}>
+            <Text style={styles.panelKicker}>Mode</Text>
+            <Text style={styles.panelTitle}>Choose the runtime path</Text>
             <Text style={styles.panelSub}>
-              Switch between timing and curve examples, save into{' '}
-              {isUsingLibraryFolder ? documentStoreLabel : 'the app sandbox'},
-              attach mix inputs, and validate against the native library.
+              Sequence mode edits and plays full <Text style={styles.inlineCode}>.sbg</Text>{' '}
+              files. Built-in Program mode drives <Text style={styles.inlineCode}>-p</Text>{' '}
+              programs, with the <Text style={styles.inlineCode}>curve</Text> program using the{' '}
+              <Text style={styles.inlineCode}>.sbgf</Text> editor.
             </Text>
 
-            <View style={styles.segmentRow}>
+            <View style={styles.radioGroup}>
               <Pressable
                 onPress={() => {
-                  loadPreset('sbg', 'sample').catch(() => {});
+                  setRuntimeMode('program');
                 }}
-                style={[
-                  styles.segmentButton,
-                  documentKind === 'sbg' && styles.segmentButtonActive,
+                style={({ pressed }) => [
+                  styles.radioCard,
+                  runtimeMode === 'program' && styles.radioCardActive,
+                  pressed && styles.buttonPressed,
                 ]}
               >
-                <Text
-                  style={[
-                    styles.segmentButtonText,
-                    documentKind === 'sbg' && styles.segmentButtonTextActive,
-                  ]}
-                >
-                  .sbg timing
-                </Text>
+                <View style={styles.radioIndicator}>
+                  <View
+                    style={[
+                      styles.radioIndicatorDot,
+                      runtimeMode === 'program' && styles.radioIndicatorDotActive,
+                    ]}
+                  />
+                </View>
+                <View style={styles.radioCopy}>
+                  <Text style={styles.radioLabel}>Built-in Program</Text>
+                  <Text style={styles.radioSub}>
+                    Run <Text style={styles.inlineCode}>drop</Text>,{' '}
+                    <Text style={styles.inlineCode}>slide</Text>,{' '}
+                    <Text style={styles.inlineCode}>sigmoid</Text>, or{' '}
+                    <Text style={styles.inlineCode}>curve</Text>.
+                  </Text>
+                </View>
               </Pressable>
 
               <Pressable
                 onPress={() => {
-                  loadPreset('sbgf', 'sample').catch(() => {});
+                  setRuntimeMode('sequence');
                 }}
-                style={[
-                  styles.segmentButton,
-                  documentKind === 'sbgf' && styles.segmentButtonActive,
+                style={({ pressed }) => [
+                  styles.radioCard,
+                  runtimeMode === 'sequence' && styles.radioCardActive,
+                  pressed && styles.buttonPressed,
                 ]}
               >
-                <Text
-                  style={[
-                    styles.segmentButtonText,
-                    documentKind === 'sbgf' && styles.segmentButtonTextActive,
-                  ]}
-                >
-                  .sbgf curve
-                </Text>
+                <View style={styles.radioIndicator}>
+                  <View
+                    style={[
+                      styles.radioIndicatorDot,
+                      runtimeMode === 'sequence' && styles.radioIndicatorDotActive,
+                    ]}
+                  />
+                </View>
+                <View style={styles.radioCopy}>
+                  <Text style={styles.radioLabel}>Sequence File</Text>
+                  <Text style={styles.radioSub}>
+                    Edit and play <Text style={styles.inlineCode}>.sbg</Text>{' '}
+                    timing files.
+                  </Text>
+                </View>
               </Pressable>
             </View>
+          </GlassCard>
 
-            <Text style={styles.fieldLabel}>File Name</Text>
-            <TextInput
-              onChangeText={setFileName}
-              style={styles.input}
-              value={fileName}
-            />
+          {runtimeMode === 'program' ? (
+            <GlassCard style={styles.panel}>
+              <Text style={styles.panelKicker}>Program</Text>
+              <Text style={styles.panelTitle}>Built-in program settings</Text>
+              <Text style={styles.panelSub}>
+                Choose a program, provide its main argument, and optionally
+                attach a mix. Use <Text style={styles.inlineCode}>+</Text> to
+                activate hold-time and <Text style={styles.inlineCode}>^</Text>{' '}
+                to activate wake-time in the main argument field.
+              </Text>
 
-            <View style={styles.buttonRow}>
-              <ActionButton
-                label="Load"
+              <Text style={styles.fieldLabel}>Program</Text>
+              <Pressable
                 onPress={() => {
-                  handleOpenLoadBrowser().catch(() => {});
+                  setIsProgramPickerVisible(true);
                 }}
-              />
-              <ActionButton
-                disabled={isSaving}
-                label={isSaving ? 'Saving...' : 'Save'}
-                onPress={handleSaveDocument}
-              />
-            </View>
+                style={({ pressed }) => [
+                  styles.selectField,
+                  pressed && styles.buttonPressed,
+                ]}
+              >
+                <Text style={styles.selectFieldValue}>
+                  {programKindLabel(programKind)}
+                </Text>
+                <Text style={styles.selectFieldChevron}>▼</Text>
+              </Pressable>
 
-            <View style={styles.buttonRow}>
-              <ActionButton
-                label="Refresh Files"
-                onPress={() => {
-                  handleRefreshFiles().catch(() => {});
+              <View style={styles.inlineField}>
+                <Text style={styles.fieldLabel}>
+                  {programKind === 'slide' ? 'Duration (min)' : 'Drop-Time (min)'}
+                </Text>
+                <TextInput
+                  keyboardType="decimal-pad"
+                  onChangeText={setProgramDropMinutes}
+                  style={styles.input}
+                  value={programDropMinutes}
+                />
+              </View>
+
+              <View style={styles.inlineField}>
+                <Text style={styles.fieldLabel}>Hold-Time (min)</Text>
+                <TextInput
+                  editable={programKind !== 'slide'}
+                  keyboardType="decimal-pad"
+                  onChangeText={setProgramHoldMinutes}
+                  style={[
+                    styles.input,
+                    programKind === 'slide' && styles.inputDisabled,
+                  ]}
+                  value={programHoldMinutes}
+                />
+              </View>
+
+              <View style={styles.inlineField}>
+                <Text style={styles.fieldLabel}>Wake-Time (min)</Text>
+                <TextInput
+                  editable={programKind !== 'slide'}
+                  keyboardType="decimal-pad"
+                  onChangeText={setProgramWakeMinutes}
+                  style={[
+                    styles.input,
+                    programKind === 'slide' && styles.inputDisabled,
+                  ]}
+                  value={programWakeMinutes}
+                />
+              </View>
+
+              <Text style={styles.fieldLabel}>Main Argument</Text>
+              <TextInput
+                onChangeText={nextValue => {
+                  setProgramMainArgs(current => ({
+                    ...current,
+                    [programKind]: nextValue,
+                  }));
+                  setDiagnostics([]);
+                  setCurveInfo(null);
+                  setPreviewState(null);
+                  setBridgeError(null);
+                  setValidationState('Program settings updated.');
                 }}
+                style={styles.input}
+                value={currentProgramMainArg}
               />
-              {documentKind === 'sbg' ? (
+
+              <View style={styles.buttonRow}>
                 <ActionButton
-                  label={mixPathInText ? 'Change Mix' : 'Add Mix'}
+                  label={programMixPath ? 'Change Mix' : 'Add Mix'}
                   onPress={() => {
                     handleAddMix().catch(() => {});
                   }}
                 />
-              ) : null}
-            </View>
+              </View>
 
-            <Text style={styles.note}>
-              Save target:{' '}
-              <Text style={styles.inlineCode}>{documentStoreLabel}</Text>
-            </Text>
-
-            <Text style={styles.note}>
-              Document path resolves to:{' '}
-              <Text style={styles.inlineCode}>{resolvedName}</Text>
-            </Text>
-
-            <Text style={styles.note}>
-              Inline diagnostics refresh automatically while you type.
-            </Text>
-
-            {documentKind === 'sbg' && mixPathInText ? (
               <Text style={styles.note}>
-                Mix file:{' '}
+                Program source:{' '}
                 <Text style={styles.inlineCode}>
-                  {mixDisplayName ?? summarizeMixReference(mixPathInText)}
+                  {programKind === 'curve'
+                    ? curveSourceName ?? curveResolvedName
+                    : `program:${programKind}`}
                 </Text>
               </Text>
-            ) : null}
 
-            <SbaGenXEditor
-              diagnostics={diagnostics}
-              onTextChange={event => {
-                handleEditorTextChange(event.nativeEvent.text);
-              }}
-              placeholder="Compose .sbg or .sbgf text here."
-              style={styles.editor}
-              text={text}
-            />
-          </View>
+              {programMixPath ? (
+                <Text style={styles.note}>
+                  Mix file:{' '}
+                  <Text style={styles.inlineCode}>
+                    {programMixDisplayName ??
+                      summarizeMixReference(programMixPath)}
+                  </Text>
+                </Text>
+              ) : (
+                <Text style={styles.note}>
+                  No mix file selected for this program yet.
+                </Text>
+              )}
+            </GlassCard>
+          ) : null}
+
+          {activeDocumentKind ? (
+            <GlassCard style={styles.panel}>
+              <Text style={styles.panelKicker}>Document</Text>
+              <Text style={styles.panelTitle}>
+                {activeDocumentKind === 'sbg'
+                  ? 'Sequence editor and files'
+                  : 'Curve editor and files'}
+              </Text>
+              <Text style={styles.panelSub}>
+                {activeDocumentKind === 'sbg'
+                  ? `Open, edit, and save .sbg files in ${
+                      isUsingLibraryFolder ? documentStoreLabel : 'the app sandbox'
+                    }. Mix references live in the safe preamble.`
+                  : `Open, edit, and save the .sbgf file used by the curve program in ${
+                      isUsingLibraryFolder ? documentStoreLabel : 'the app sandbox'
+                    }.`}
+              </Text>
+
+              <Text style={styles.fieldLabel}>File Name</Text>
+              <TextInput
+                onChangeText={value => {
+                  if (activeDocumentKind === 'sbg') {
+                    setSequenceFileName(value);
+                  } else {
+                    setCurveFileName(value);
+                  }
+                }}
+                style={styles.input}
+                value={
+                  activeDocumentKind === 'sbg' ? sequenceFileName : curveFileName
+                }
+              />
+
+              <View style={[styles.buttonRow, styles.documentActionRow]}>
+                <ActionButton
+                  label="Load"
+                  onPress={() => {
+                    handleOpenLoadBrowser().catch(() => {});
+                  }}
+                />
+                <ActionButton
+                  disabled={isSaving}
+                  label={isSaving ? 'Saving...' : 'Save'}
+                  onPress={handleSaveDocument}
+                />
+              </View>
+
+              <View style={[styles.buttonRow, styles.documentActionRow]}>
+                <ActionButton
+                  label="Refresh Files"
+                  onPress={() => {
+                    handleRefreshFiles().catch(() => {});
+                  }}
+                />
+                {activeDocumentKind === 'sbg' ? (
+                  <ActionButton
+                    label={sequenceMixPathInText ? 'Change Mix' : 'Add Mix'}
+                    onPress={() => {
+                      handleAddMix().catch(() => {});
+                    }}
+                  />
+                ) : null}
+              </View>
+
+              <Text style={styles.note}>
+                Save target:{' '}
+                <Text style={styles.inlineCode}>{documentStoreLabel}</Text>
+              </Text>
+
+              <Text style={styles.note}>
+                Document path resolves to:{' '}
+                <Text style={styles.inlineCode}>{activeResolvedName}</Text>
+              </Text>
+
+              <Text style={styles.note}>
+                Inline diagnostics refresh automatically while you type.
+              </Text>
+
+              {activeDocumentKind === 'sbg' && sequenceMixPathInText ? (
+                <Text style={styles.note}>
+                  Mix file:{' '}
+                  <Text style={styles.inlineCode}>
+                    {sequenceMixDisplayName ??
+                      summarizeMixReference(sequenceMixPathInText)}
+                  </Text>
+                </Text>
+              ) : null}
+
+              <SbaGenXEditor
+                diagnostics={diagnostics}
+                onTextChange={event => {
+                  handleEditorTextChange(event.nativeEvent.text);
+                }}
+                placeholder="Compose .sbg or .sbgf text here."
+                style={styles.editor}
+                text={activeText}
+              />
+            </GlassCard>
+          ) : null}
 
           <View style={[styles.card, styles.cardSoft, styles.panel]}>
             <Text style={styles.panelKicker}>Runtime</Text>
             <Text style={styles.panelTitle}>Render and playback</Text>
             <Text style={styles.panelSub}>
-              Playback prepares a fresh native runtime automatically for{' '}
-              <Text style={styles.inlineCode}>.sbg</Text> timing documents.
-              Preview tooling is still available behind the developer toggle.
+              Playback prepares a fresh native runtime automatically for the
+              current mode, whether that is a sequence file or a built-in
+              program. Preview tooling is still available behind the developer
+              toggle.
             </Text>
 
             <View style={styles.buttonRow}>
@@ -1355,7 +1446,7 @@ export function ValidationWorkbench() {
             ) : null}
           </View>
 
-          <View style={[styles.card, styles.cardGlass, styles.panel]}>
+          <GlassCard style={styles.panel}>
             <Text style={styles.panelKicker}>Diagnostics</Text>
             <Text style={styles.panelTitle}>Validation and bridge state</Text>
             <Text style={styles.panelSub}>
@@ -1372,7 +1463,7 @@ export function ValidationWorkbench() {
               </View>
             ) : null}
 
-            {documentKind === 'sbgf' ? (
+            {runtimeMode === 'program' && programKind === 'curve' ? (
               curveInfo ? (
                 <View
                   style={[
@@ -1451,8 +1542,9 @@ export function ValidationWorkbench() {
 
             {diagnostics.length === 0 ? (
               <Text style={styles.emptyState}>
-                No diagnostics recorded yet. Keep typing or load a broken
-                sample to exercise the native parser and span reporting.
+                {activeDocumentKind
+                  ? 'No diagnostics recorded yet. Keep typing to exercise the native parser and span reporting.'
+                  : 'No inline document diagnostics are active in this mode.'}
               </Text>
             ) : (
               diagnostics.map(diagnostic => (
@@ -1482,7 +1574,7 @@ export function ValidationWorkbench() {
                 </View>
               ))
             )}
-          </View>
+          </GlassCard>
 
           {isUsingLibraryFolder ? (
             <View style={[styles.card, styles.cardSoft, styles.panel]}>
@@ -1524,160 +1616,74 @@ export function ValidationWorkbench() {
         <Modal
           animationType="fade"
           onRequestClose={() => {
-            setIsLoadBrowserVisible(false);
+            setIsProgramPickerVisible(false);
           }}
           transparent
-          visible={isLoadBrowserVisible}
+          visible={isProgramPickerVisible}
         >
           <View style={styles.modalScrim}>
             <Pressable
               onPress={() => {
-                setIsLoadBrowserVisible(false);
+                setIsProgramPickerVisible(false);
               }}
               style={StyleSheet.absoluteFill}
             />
 
             <View style={[styles.card, styles.cardSoft, styles.modalCard]}>
-              <Text style={styles.panelKicker}>Load</Text>
-              <Text style={styles.panelTitle}>
-                {isUsingLibraryFolder
-                  ? 'Library Browser'
-                  : 'App Storage Browser'}
-              </Text>
+              <Text style={styles.panelKicker}>Program</Text>
+              <Text style={styles.panelTitle}>Choose a built-in program</Text>
               <Text style={styles.panelSub}>
-                {isUsingLibraryFolder
-                  ? `Browse bundled examples and saved files inside ${documentStoreLabel}.`
-                  : 'Browse bundled examples and saved files inside the app sandbox.'}
+                Pick the runtime preset you want the app to build. Switching to{' '}
+                <Text style={styles.inlineCode}>curve</Text> also reveals the{' '}
+                <Text style={styles.inlineCode}>.sbgf</Text> editor.
               </Text>
 
-              <ScrollView
-                contentContainerStyle={styles.breadcrumbRow}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.breadcrumbScroll}
-              >
-                <Pressable
-                  onPress={() => {
-                    setLoadBrowserPath('');
-                  }}
-                  style={({ pressed }) => [
-                    styles.breadcrumbChip,
-                    !loadBrowserPath && styles.breadcrumbChipActive,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.breadcrumbText,
-                      !loadBrowserPath && styles.breadcrumbTextActive,
-                    ]}
-                  >
-                    {isUsingLibraryFolder ? documentStoreLabel : 'Sandbox'}
-                  </Text>
-                </Pressable>
-
-                {loadBrowserSegments.map((segment, index) => {
-                  const path = loadBrowserSegments.slice(0, index + 1).join('/');
-                  const isActive = path === loadBrowserPath;
-
-                  return (
+              <View style={styles.programPickerList}>
+                {(['drop', 'sigmoid', 'slide', 'curve'] as ProgramKind[]).map(
+                  nextKind => (
                     <Pressable
-                      key={path}
+                      key={nextKind}
                       onPress={() => {
-                        setLoadBrowserPath(path);
-                      }}
-                      style={({ pressed }) => [
-                        styles.breadcrumbChip,
-                        isActive && styles.breadcrumbChipActive,
-                        pressed && styles.buttonPressed,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.breadcrumbText,
-                          isActive && styles.breadcrumbTextActive,
-                        ]}
-                      >
-                        {segment}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-
-              {loadBrowserParentPath !== null ? (
-                <Pressable
-                  onPress={() => {
-                    setLoadBrowserPath(loadBrowserParentPath);
-                  }}
-                  style={({ pressed }) => [
-                    styles.card,
-                    styles.browserEntryCard,
-                    styles.browserUpCard,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text style={styles.browserEntryTitle}>..</Text>
-                  <Text style={styles.browserEntryMeta}>Up one folder</Text>
-                </Pressable>
-              ) : null}
-
-              <ScrollView
-                nestedScrollEnabled
-                style={styles.modalEntryList}
-                showsVerticalScrollIndicator={false}
-              >
-                {isLoadBrowserLoading ? (
-                  <Text style={styles.emptyState}>Loading files...</Text>
-                ) : loadBrowserEntries.length === 0 ? (
-                  <Text style={styles.emptyState}>
-                    This folder is empty.
-                  </Text>
-                ) : (
-                  loadBrowserEntries.map(entry => (
-                    <Pressable
-                      key={`${entry.kind}:${entry.path}`}
-                      onPress={() => {
-                        if (entry.kind === 'directory') {
-                          setLoadBrowserPath(entry.path);
-                          return;
-                        }
-
-                        handleLoadFromBrowser(entry.path).catch(() => {});
+                        setProgramKind(nextKind);
+                        setRuntimeMode('program');
+                        setIsProgramPickerVisible(false);
+                        setDiagnostics([]);
+                        setCurveInfo(null);
+                        setPreviewState(null);
+                        setValidationState(
+                          `Program set to ${programKindLabel(nextKind)}.`,
+                        );
                       }}
                       style={({ pressed }) => [
                         styles.card,
                         styles.browserEntryCard,
+                        nextKind === programKind && styles.programOptionActive,
                         pressed && styles.buttonPressed,
                       ]}
                     >
                       <View style={styles.browserEntryHeader}>
                         <Text style={styles.browserEntryTitle}>
-                          {entry.name}
+                          {programKindLabel(nextKind)}
                         </Text>
                         <Text style={styles.browserEntryBadge}>
-                          {entry.kind === 'directory' ? 'Folder' : 'File'}
+                          {nextKind === 'curve' ? '.sbgf' : 'built-in'}
                         </Text>
                       </View>
                       <Text style={styles.browserEntryMeta}>
-                        {entry.kind === 'directory'
-                          ? `Open ${entry.path}`
-                          : `${formatBytes(
-                              entry.document.sizeBytes,
-                            )} • ${formatTimestamp(
-                              entry.document.modifiedAtMs,
-                            )}`}
+                        {nextKind === 'curve'
+                          ? 'Uses the .sbgf editor and curve solve data.'
+                          : 'Uses the built-in program argument field only.'}
                       </Text>
                     </Pressable>
-                  ))
+                  ),
                 )}
-              </ScrollView>
+              </View>
 
               <View style={styles.buttonRow}>
                 <ActionButton
                   label="Close"
                   onPress={() => {
-                    setIsLoadBrowserVisible(false);
+                    setIsProgramPickerVisible(false);
                   }}
                 />
               </View>
@@ -1712,10 +1718,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: SURFACE_BORDER,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.025,
+    shadowRadius: 12,
+    elevation: 1,
   },
   cardSoft: {
     backgroundColor: SURFACE_SOFT,
@@ -1723,6 +1729,10 @@ const styles = StyleSheet.create({
   cardGlass: {
     backgroundColor: SURFACE_GLASS,
     borderColor: SURFACE_BORDER_LIGHT,
+    borderWidth: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   heroCard: {
     overflow: 'hidden',
@@ -1731,18 +1741,20 @@ const styles = StyleSheet.create({
   },
   heroAccentBlue: {
     position: 'absolute',
-    top: -32,
-    left: -40,
-    width: 180,
-    height: 180,
+    top: -72,
+    left: -88,
+    width: 268,
+    height: 268,
+    opacity: 0.52,
     resizeMode: 'stretch',
   },
   heroAccentPink: {
     position: 'absolute',
-    right: -36,
-    top: -44,
-    width: 170,
-    height: 170,
+    right: -86,
+    top: -84,
+    width: 260,
+    height: 260,
+    opacity: 0.48,
     resizeMode: 'stretch',
   },
   heroTopRow: {
@@ -1930,6 +1942,88 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 11,
   },
+  inputDisabled: {
+    color: 'rgba(20, 20, 20, 0.42)',
+    opacity: 0.75,
+  },
+  radioGroup: {
+    gap: 10,
+    marginBottom: 4,
+  },
+  radioCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.10)',
+    backgroundColor: 'rgba(255, 255, 255, 0.60)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  radioCardActive: {
+    borderColor: 'rgba(58, 124, 255, 0.24)',
+    backgroundColor: 'rgba(58, 124, 255, 0.12)',
+  },
+  radioIndicator: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: 'rgba(20, 20, 20, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  radioIndicatorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'transparent',
+  },
+  radioIndicatorDotActive: {
+    backgroundColor: '#2b67de',
+  },
+  radioCopy: {
+    flex: 1,
+  },
+  radioLabel: {
+    color: '#141414',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 3,
+  },
+  radioSub: {
+    color: 'rgba(20, 20, 20, 0.66)',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  selectField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  selectFieldValue: {
+    color: '#141414',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  selectFieldChevron: {
+    color: 'rgba(20, 20, 20, 0.54)',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+  inlineField: {
+    marginBottom: 2,
+  },
   segmentRow: {
     flexDirection: 'row',
     gap: 10,
@@ -1963,6 +2057,9 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 12,
   },
+  documentActionRow: {
+    justifyContent: 'center',
+  },
   modalScrim: {
     flex: 1,
     backgroundColor: 'rgba(10, 12, 18, 0.36)',
@@ -1974,6 +2071,9 @@ const styles = StyleSheet.create({
     maxHeight: '82%',
     paddingHorizontal: 16,
     paddingVertical: 18,
+  },
+  programPickerList: {
+    marginBottom: 12,
   },
   breadcrumbScroll: {
     marginBottom: 12,
@@ -2014,6 +2114,10 @@ const styles = StyleSheet.create({
   },
   browserUpCard: {
     marginBottom: 10,
+  },
+  programOptionActive: {
+    backgroundColor: 'rgba(58, 124, 255, 0.12)',
+    borderColor: 'rgba(58, 124, 255, 0.22)',
   },
   browserEntryHeader: {
     flexDirection: 'row',

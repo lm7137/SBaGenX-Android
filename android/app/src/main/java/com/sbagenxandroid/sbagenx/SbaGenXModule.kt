@@ -134,6 +134,34 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun prepareProgramContext(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String?,
+      mixPath: String?,
+      promise: Promise,
+  ) {
+    resolveNativeCall(promise) {
+      runtimeLoader.prepareProgram(
+          ProgramRuntimeRequest(
+              programKind = programKind,
+              mainArg = mainArg,
+              dropTimeSec = dropTimeSec,
+              holdTimeSec = holdTimeSec,
+              wakeTimeSec = wakeTimeSec,
+              curveText = curveText,
+              sourceName = sourceName ?: "program:$programKind",
+              mixPath = mixPath,
+          ),
+      )
+    }
+  }
+
+  @ReactMethod
   fun getContextState(promise: Promise) {
     resolveNativeCall(promise) {
       SbagenxBridge.nativeGetContextState()
@@ -159,7 +187,41 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
     Thread(
             {
               resolveNativeCall(promise) {
-                playbackController.start(text, sourceName ?: "scratch.sbg")
+                playbackController.startSequence(text, sourceName ?: "scratch.sbg")
+              }
+            },
+            "sbagenx-start-playback",
+        )
+        .start()
+  }
+
+  @ReactMethod
+  fun startProgramPlayback(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String?,
+      mixPath: String?,
+      promise: Promise,
+  ) {
+    Thread(
+            {
+              resolveNativeCall(promise) {
+                playbackController.startProgram(
+                    ProgramRuntimeRequest(
+                        programKind = programKind,
+                        mainArg = mainArg,
+                        dropTimeSec = dropTimeSec,
+                        holdTimeSec = holdTimeSec,
+                        wakeTimeSec = wakeTimeSec,
+                        curveText = curveText,
+                        sourceName = sourceName ?: "program:$programKind",
+                        mixPath = mixPath,
+                    ),
+                )
               }
             },
             "sbagenx-start-playback",

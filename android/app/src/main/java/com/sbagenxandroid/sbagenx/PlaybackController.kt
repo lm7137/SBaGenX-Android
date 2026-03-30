@@ -20,7 +20,22 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
   private var bufferFrames: Int = 0
   private var activeSourceName: String? = null
 
-  fun start(text: String, sourceName: String): String {
+  fun startSequence(text: String, sourceName: String): String {
+    return startPreparedRuntime(sourceName) {
+      runtimeLoader.prepareForPlayback(text, sourceName)
+    }
+  }
+
+  fun startProgram(request: ProgramRuntimeRequest): String {
+    return startPreparedRuntime(request.sourceName) {
+      runtimeLoader.prepareProgramForPlayback(request)
+    }
+  }
+
+  private fun startPreparedRuntime(
+      sourceName: String,
+      prepare: () -> PreparedPlaybackRuntime,
+  ): String {
     stopInternal(join = true)
 
     val startToken =
@@ -32,7 +47,7 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
           startGeneration
         }
 
-    val preparedRuntime = runtimeLoader.prepareForPlayback(text, sourceName)
+    val preparedRuntime = prepare()
     val prepState = JSONObject(preparedRuntime.stateJson)
     if (isStartCancelled(startToken)) {
       preparedRuntime.mixInput?.decoder?.close()
