@@ -16,7 +16,8 @@ The current bridge proves the minimum useful path:
 - preview PCM rendering from JNI
 - live Android playback via `AudioTrack`
 - safe `-SE` preamble parsing before `.sbg` runtime prepare
-- Android-side mix-source resolution and decode for `.sbg` `-m` inputs and built-in program mixes
+- Android-side mix-source resolution for `.sbg` `-m` inputs and built-in program mixes
+- native stdio-backed mix inputs through `sbx_mix_input_create_stdio(...)` with bundled Android codec archives for OGG, MP3, and FLAC
 - app/UI-state `SBAGEN_LOOPER` overrides for loaded mixes
 - app-local draft persistence through the React Native module
 
@@ -47,7 +48,8 @@ The JNI layer now owns a process-local runtime wrapper around `SbxContext`.
 - `.sbg` text can be loaded into a persistent native context
 - safe sequence preambles are parsed before the timing loader runs
 - preview calls render PCM float blocks without committing to audio output
-- decoded mix PCM is applied through `sbx_context_mix_stream_sample()`
+- native stdio mix inputs are preferred for preview and playback, so `sbagenxlib` owns decode, looping, and chunked read behavior when the codec is available
+- the older Android decode-to-PCM path remains in the codebase as a fallback path, but the intended default now is native stdio-backed decode
 - playback reuses the same context model and pulls PCM into an Android `AudioTrack`
 - the JS layer polls context and playback state rather than duplicating render logic
 - sequence-mode mix path and `SBAGEN_LOOPER` now live in app state, with `.sbg` preamble `-m` acting only as a fallback source
@@ -60,7 +62,9 @@ Current mix-input rules:
 - absolute file paths and `file://` paths are supported
 - `content://` URIs are supported when Android has permission to read them
 - relative file paths are only resolved when the `.sbg` source name is itself a file path
-- mix section suffixes like `#1` are not supported yet by the Android runtime
+- mix section suffixes like `#1` are now passed through to `sbx_mix_input_create_stdio(...)`
+- FLAC native decode is bundled into the Android build now
+- OGG and MP3 native decode are bundled into the Android build now through Android NDK builds of `libogg`, Tremor `libvorbisidec`, and `libmad`
 
 ## Build path
 
@@ -73,6 +77,8 @@ The Android app currently builds native code for:
 
 - `arm64-v8a`
 - `x86_64`
+
+The parent `SBaGenX` repo provides `android-build-libs.sh` to rebuild those codec archives from upstream source tarballs with the Android NDK.
 
 ## Why validation first
 

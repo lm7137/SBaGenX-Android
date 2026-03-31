@@ -117,6 +117,7 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
     }
 
     val mixDecoder = preparedRuntime.mixInput?.decoder
+    val useNativeMixBackend = preparedRuntime.useNativeMixBackend
     val worker =
         Thread({
           Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
@@ -132,22 +133,26 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
             track.play()
 
             while (shouldContinuePlayback(startToken)) {
-              val mixFrameCount =
-                  if (mixDecoder != null && mixBuffer != null) {
-                    mixDecoder.readFrames(mixBuffer, resolvedBufferFrames) {
-                      !shouldContinuePlayback(startToken)
-                    }
-                  } else {
-                    0
-                  }
-
               val renderStatus =
-                  SbagenxBridge.nativeRenderIntoBufferWithMix(
-                      audioBuffer,
-                      resolvedBufferFrames,
-                      mixBuffer,
-                      mixFrameCount,
-                  )
+                  if (useNativeMixBackend) {
+                    SbagenxBridge.nativeRenderIntoBuffer(audioBuffer, resolvedBufferFrames)
+                  } else {
+                    val mixFrameCount =
+                        if (mixDecoder != null && mixBuffer != null) {
+                          mixDecoder.readFrames(mixBuffer, resolvedBufferFrames) {
+                            !shouldContinuePlayback(startToken)
+                          }
+                        } else {
+                          0
+                        }
+
+                    SbagenxBridge.nativeRenderIntoBufferWithMix(
+                        audioBuffer,
+                        resolvedBufferFrames,
+                        mixBuffer,
+                        mixFrameCount,
+                    )
+                  }
               if (renderStatus != 0) {
                 lastError = "Native render failed with status $renderStatus."
                 break

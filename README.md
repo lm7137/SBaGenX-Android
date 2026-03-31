@@ -17,6 +17,7 @@ The repo is scaffolded as a plain React Native app and already includes:
 - live Android playback for `.sbg` via `AudioTrack`
 - safe `-SE` preamble handling during `.sbg` prepare/playback
 - runtime mix support for `.sbg` `-m` inputs and program-mode mixes resolved from bundled app assets, file paths, or `content://` URIs
+- native stdio-backed mix inputs via `sbx_mix_input_create_stdio(...)` for WAV/raw, FLAC, OGG, and MP3 using bundled Android codec archives
 - `SBAGEN_LOOPER` override state for loaded mixes, with Android keeping mix/looper settings outside the edited `.sbg` text
 - app-local draft save/load inside Android app storage
 
@@ -87,7 +88,7 @@ cd android
 - `saveDocument(name, text)`
 - `loadDocument(name)`
 
-The current editor workbench can validate both `.sbg` and `.sbgf`, inspect prepared `.sbgf` curve parameters from `sbagenxlib`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack.
+The current editor workbench can validate both `.sbg` and `.sbgf`, inspect prepared `.sbgf` curve parameters from `sbagenxlib`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack. Mix playback now prefers `sbx_mix_input_create_stdio(...)`, using bundled native codec archives for OGG, MP3, and FLAC.
 
 Bundled Android app assets now include:
 
@@ -95,6 +96,8 @@ Bundled Android app assets now include:
 - `river2.ogg`
 
 That means desktop-style examples such as `-SE -m river1.ogg` can resolve inside the Android app without needing an external document picker first.
+
+The parent `SBaGenX` repo now includes [android-build-libs.sh](/home/magiktime/projects/SBaGenX/android-build-libs.sh), which rebuilds the Android `libogg`, Tremor `libvorbisidec`, and `libmad` static archives with the Android NDK and drops them into `SBaGenX/libs/` for vendoring into this repo.
 
 ## Snapshot provenance
 

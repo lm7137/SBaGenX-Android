@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -412,6 +413,44 @@ struct ProgramKeyframesDeleter {
   }
 };
 
+struct MixInputDeleter {
+  void operator()(SbxMixInput *input) const {
+    if (input) {
+      sbx_mix_input_destroy(input);
+    }
+  }
+};
+
+struct NativeMixSourceRequest {
+  std::string requested_mix_path;
+  std::string file_path;
+  std::string path_hint;
+  std::string source_name;
+  int mix_section = -1;
+  std::string looper_spec;
+  bool delete_on_release = false;
+};
+
+class StagedMixFileCleanup {
+ public:
+  explicit StagedMixFileCleanup(const NativeMixSourceRequest *request)
+      : request_(request) {}
+
+  void dismiss() { active_ = false; }
+
+  ~StagedMixFileCleanup() {
+    if (!active_ || !request_ || !request_->delete_on_release ||
+        request_->file_path.empty()) {
+      return;
+    }
+    std::remove(request_->file_path.c_str());
+  }
+
+ private:
+  const NativeMixSourceRequest *request_ = nullptr;
+  bool active_ = true;
+};
+
 struct SafeSeqPreparedText {
   SafeSeqPreparedText() {
     sbx_default_safe_seqfile_preamble(&config);
@@ -462,7 +501,7 @@ struct DropLikeMainArg {
   double carrier_base_hz = 200.0;
   double beat_target_hz = 2.5;
   double beat_start_hz = 10.0;
-  double amp_pct = 100.0;
+  double amp_pct = 1.0;
   double sig_l = 0.125;
   double sig_h = 0.0;
   std::vector<CurveParameterOverride> curve_overrides;
@@ -474,7 +513,7 @@ struct SlideMainArg {
   double carrier_start_hz = 200.0;
   double carrier_end_hz = 5.0;
   double beat_hz = 10.0;
-  double amp_pct = 100.0;
+  double amp_pct = 1.0;
 };
 
 std::string trim_ascii(const std::string &input) {
@@ -1024,6 +1063,19 @@ class BridgeRuntimeState {
                                     true);
   }
 
+  std::string prepare_sbg_context_stdio(const std::string &text,
+                                        const std::string &source_name,
+                                        const NativeMixSourceRequest &mix_source) {
+    return prepare_sbg_context_impl(text,
+                                    source_name,
+                                    nullptr,
+                                    0U,
+                                    mix_source.source_name,
+                                    !mix_source.looper_spec.empty(),
+                                    false,
+                                    &mix_source);
+  }
+
   std::string prepare_program_context(const ProgramRequest &request,
                                       const int16_t *mix_samples,
                                       size_t mix_sample_count,
@@ -1049,6 +1101,18 @@ class BridgeRuntimeState {
                                         true);
   }
 
+  std::string prepare_program_context_stdio(
+      const ProgramRequest &request,
+      const NativeMixSourceRequest &mix_source) {
+    return prepare_program_context_impl(request,
+                                        nullptr,
+                                        0U,
+                                        mix_source.source_name,
+                                        !mix_source.looper_spec.empty(),
+                                        false,
+                                        &mix_source);
+  }
+
   std::string context_state_json() {
     std::lock_guard<std::mutex> lock(mutex_);
     return build_context_state_json_locked(SBX_OK, "");
@@ -1063,6 +1127,14 @@ class BridgeRuntimeState {
 
     sbx_context_reset(context_.get());
     mix_cursor_frame_ = 0U;
+    if (mix_native_input_) {
+      std::string error;
+      if (!reopen_native_mix_input_locked(&error)) {
+        return build_context_state_json_locked(
+            SBX_ENOTREADY,
+            error.empty() ? "Failed to reset the native mix input." : error);
+      }
+    }
     return build_context_state_json_locked(SBX_OK, "");
   }
 
@@ -1112,8 +1184,28 @@ class BridgeRuntimeState {
           error && error[0] ? error : "Failed to render preview frames.");
     }
 
-    const int mix_status =
-        apply_stored_mix_stream_locked(preview_buffer_.data(), frames, resume_time);
+    int mix_status = SBX_OK;
+    if (mix_native_input_) {
+      std::string preview_error;
+      auto preview_mix_input = create_preview_native_mix_input_locked(&preview_error);
+      if (!preview_mix_input) {
+        return build_preview_json_locked(
+            SBX_ENOTREADY,
+            frames,
+            0.0,
+            0.0,
+            nullptr,
+            0,
+            preview_error.empty() ? "Failed to open the native mix input." : preview_error);
+      }
+      mix_status = apply_native_mix_input_locked(preview_buffer_.data(),
+                                                 frames,
+                                                 resume_time,
+                                                 preview_mix_input.get());
+    } else {
+      mix_status =
+          apply_stored_mix_stream_locked(preview_buffer_.data(), frames, resume_time);
+    }
     if (mix_status != SBX_OK) {
       mix_cursor_frame_ = resume_mix_cursor;
       return build_preview_json_locked(
@@ -1186,6 +1278,10 @@ class BridgeRuntimeState {
       return render_status;
     }
 
+    if (mix_native_input_) {
+      return apply_native_mix_input_locked(out, frames, start_time_sec, mix_input_.get());
+    }
+
     return apply_stored_mix_stream_locked(out, frames, start_time_sec);
   }
 
@@ -1226,20 +1322,38 @@ class BridgeRuntimeState {
       const std::string &mix_source_name,
       bool mix_looping,
       const int16_t *mix_samples,
-      size_t mix_sample_count) {
+      size_t mix_sample_count,
+      std::unique_ptr<SbxMixInput, MixInputDeleter> native_mix_input = nullptr,
+      const NativeMixSourceRequest *native_mix_source = nullptr) {
     duration_sec_ = duration_sec;
     context_ = std::move(next_ctx);
     mix_path_ = mix_path;
     mix_source_name_.clear();
     mix_looping_ = false;
     mix_active_ = false;
+    mix_native_input_ = false;
     mix_cursor_frame_ = 0U;
     mix_samples_.clear();
+    mix_input_.reset();
+    mix_file_path_.clear();
+    mix_path_hint_.clear();
+    mix_looper_spec_.clear();
+    mix_section_ = -1;
+    mix_delete_on_release_ = false;
 
     if (!mix_path.empty()) {
       mix_active_ = true;
       mix_looping_ = mix_looping;
       mix_source_name_ = mix_source_name.empty() ? mix_path : mix_source_name;
+      if (native_mix_input && native_mix_source) {
+        mix_native_input_ = true;
+        mix_input_ = std::move(native_mix_input);
+        mix_file_path_ = native_mix_source->file_path;
+        mix_path_hint_ = native_mix_source->path_hint;
+        mix_looper_spec_ = native_mix_source->looper_spec;
+        mix_section_ = native_mix_source->mix_section;
+        mix_delete_on_release_ = native_mix_source->delete_on_release;
+      }
       if (mix_samples && mix_sample_count > 0U) {
         mix_samples_.assign(mix_samples, mix_samples + mix_sample_count);
       }
@@ -1253,7 +1367,9 @@ class BridgeRuntimeState {
                                            size_t mix_sample_count,
                                            const std::string &mix_source_name,
                                            bool mix_looping,
-                                           bool allow_streaming_without_samples) {
+                                           bool allow_streaming_without_samples,
+                                           const NativeMixSourceRequest *native_mix_source =
+                                               nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     clear_locked();
@@ -1265,7 +1381,33 @@ class BridgeRuntimeState {
     sbx_default_engine_config(&config_);
 
     const bool mix_required = !request.mix_path.empty();
-    if (mix_required && !allow_streaming_without_samples &&
+    const bool using_native_mix = mix_required && native_mix_source;
+    StagedMixFileCleanup staged_mix_cleanup(native_mix_source);
+    std::unique_ptr<SbxMixInput, MixInputDeleter> native_mix_input;
+    if (using_native_mix) {
+      std::string mix_error;
+      native_mix_input = open_native_mix_input_locked(
+          native_mix_source->file_path,
+          native_mix_source->path_hint,
+          native_mix_source->mix_section,
+          native_mix_source->looper_spec,
+          true,
+          static_cast<int>(config_.sample_rate),
+          &mix_error);
+      if (!native_mix_input) {
+        return build_context_state_json_locked(
+            SBX_ENOTREADY,
+            mix_error.empty() ? "Failed to open the native mix input." : mix_error);
+      }
+
+      const int output_rate = sbx_mix_input_output_rate(native_mix_input.get());
+      if (output_rate > 0) {
+        config_.sample_rate = static_cast<double>(output_rate);
+      }
+      mix_looping = !native_mix_source->looper_spec.empty();
+    }
+
+    if (mix_required && !using_native_mix && !allow_streaming_without_samples &&
         (!mix_samples || mix_sample_count < 2U)) {
       return build_context_state_json_locked(
           SBX_EINVAL,
@@ -1315,7 +1457,8 @@ class BridgeRuntimeState {
       SbxRuntimeContextConfig runtime_cfg{};
       sbx_default_runtime_context_config(&runtime_cfg);
       runtime_cfg.engine = config_;
-      runtime_cfg.default_mix_amp_pct = 100.0;
+      runtime_cfg.default_mix_amp_pct =
+          sbx_builtin_default_mix_amp_pct(parsed.amp_pct);
 
       double duration_sec = 0.0;
       SbxContext *raw_ctx = nullptr;
@@ -1330,13 +1473,16 @@ class BridgeRuntimeState {
                               : "Failed to create the built-in slide runtime.");
       }
 
+      staged_mix_cleanup.dismiss();
       return adopt_context_locked(std::move(next_ctx),
                                   duration_sec,
                                   request.mix_path,
                                   mix_source_name,
                                   mix_looping,
                                   mix_samples,
-                                  mix_sample_count);
+                                  mix_sample_count,
+                                  std::move(native_mix_input),
+                                  native_mix_source);
     }
 
     DropLikeMainArg parsed;
@@ -1450,7 +1596,14 @@ class BridgeRuntimeState {
         curve.release();
 
         status = sbx_context_configure_runtime(
-            next_ctx.get(), nullptr, 0U, 100.0, nullptr, 0U, nullptr, 0U);
+            next_ctx.get(),
+            nullptr,
+            0U,
+            sbx_builtin_default_mix_amp_pct(parsed.amp_pct),
+            nullptr,
+            0U,
+            nullptr,
+            0U);
         if (status != SBX_OK) {
           const char *error = sbx_context_last_error(next_ctx.get());
           return build_context_state_json_locked(
@@ -1460,13 +1613,16 @@ class BridgeRuntimeState {
                   : "Failed to configure the built-in curve runtime.");
         }
 
+        staged_mix_cleanup.dismiss();
         return adopt_context_locked(std::move(next_ctx),
                                     source_cfg.duration_sec,
                                     request.mix_path,
                                     mix_source_name,
                                     mix_looping,
                                     mix_samples,
-                                    mix_sample_count);
+                                    mix_sample_count,
+                                    std::move(native_mix_input),
+                                    native_mix_source);
       }
 
       std::unique_ptr<SbxProgramKeyframe, ProgramKeyframesDeleter> frames;
@@ -1529,7 +1685,8 @@ class BridgeRuntimeState {
       SbxRuntimeContextConfig runtime_cfg{};
       sbx_default_runtime_context_config(&runtime_cfg);
       runtime_cfg.engine = config_;
-      runtime_cfg.default_mix_amp_pct = 100.0;
+      runtime_cfg.default_mix_amp_pct =
+          sbx_builtin_default_mix_amp_pct(parsed.amp_pct);
 
       double duration_sec = 0.0;
       SbxContext *raw_ctx = nullptr;
@@ -1547,13 +1704,16 @@ class BridgeRuntimeState {
                        : "Failed to create the built-in sigmoid runtime."));
       }
 
+      staged_mix_cleanup.dismiss();
       return adopt_context_locked(std::move(next_ctx),
                                   duration_sec,
                                   request.mix_path,
                                   mix_source_name,
                                   mix_looping,
                                   mix_samples,
-                                  mix_sample_count);
+                                  mix_sample_count,
+                                  std::move(native_mix_input),
+                                  native_mix_source);
     }
 
     if (trim_ascii(request.curve_text).empty()) {
@@ -1604,7 +1764,7 @@ class BridgeRuntimeState {
     eval_cfg.total_min = static_cast<double>(main_sec) / 60.0;
     eval_cfg.wake_min = static_cast<double>(wake_sec) / 60.0;
     eval_cfg.beat_amp0_pct = parsed.amp_pct;
-    eval_cfg.mix_amp0_pct = 100.0;
+    eval_cfg.mix_amp0_pct = sbx_builtin_default_mix_amp_pct(parsed.amp_pct);
 
     status = sbx_curve_prepare(curve.get(), &eval_cfg);
     if (status != SBX_OK) {
@@ -1644,7 +1804,14 @@ class BridgeRuntimeState {
       curve.release();
 
       status = sbx_context_configure_runtime(
-          next_ctx.get(), nullptr, 0U, 100.0, nullptr, 0U, nullptr, 0U);
+          next_ctx.get(),
+          nullptr,
+          0U,
+          sbx_builtin_default_mix_amp_pct(parsed.amp_pct),
+          nullptr,
+          0U,
+          nullptr,
+          0U);
       if (status != SBX_OK) {
         const char *error = sbx_context_last_error(next_ctx.get());
         return build_context_state_json_locked(
@@ -1654,13 +1821,16 @@ class BridgeRuntimeState {
                 : "Failed to configure the exact curve runtime.");
       }
 
+      staged_mix_cleanup.dismiss();
       return adopt_context_locked(std::move(next_ctx),
                                   source_cfg.duration_sec,
                                   request.mix_path,
                                   mix_source_name,
                                   mix_looping,
                                   mix_samples,
-                                  mix_sample_count);
+                                  mix_sample_count,
+                                  std::move(native_mix_input),
+                                  native_mix_source);
     }
 
     SbxCurveTimeline timeline{};
@@ -1694,7 +1864,8 @@ class BridgeRuntimeState {
     runtime_cfg.engine = config_;
     runtime_cfg.mix_kfs = timeline.mix_frames;
     runtime_cfg.mix_kf_count = timeline.mix_frame_count;
-    runtime_cfg.default_mix_amp_pct = 100.0;
+    runtime_cfg.default_mix_amp_pct =
+        sbx_builtin_default_mix_amp_pct(parsed.amp_pct);
 
     double duration_sec = 0.0;
     SbxContext *raw_ctx = nullptr;
@@ -1716,13 +1887,16 @@ class BridgeRuntimeState {
               : "Failed to create the stepped curve runtime.");
     }
 
+    staged_mix_cleanup.dismiss();
     return adopt_context_locked(std::move(next_ctx),
                                 duration_sec,
                                 request.mix_path,
                                 mix_source_name,
                                 mix_looping,
                                 mix_samples,
-                                mix_sample_count);
+                                mix_sample_count,
+                                std::move(native_mix_input),
+                                native_mix_source);
   }
 
   std::string prepare_sbg_context_impl(const std::string &text,
@@ -1731,7 +1905,9 @@ class BridgeRuntimeState {
                                        size_t mix_sample_count,
                                        const std::string &mix_source_name,
                                        bool mix_looping,
-                                       bool allow_streaming_without_samples) {
+                                       bool allow_streaming_without_samples,
+                                       const NativeMixSourceRequest *native_mix_source =
+                                           nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     clear_locked();
@@ -1750,11 +1926,45 @@ class BridgeRuntimeState {
       config_.sample_rate = static_cast<double>(prepared.config.rate);
     }
 
-    const bool mix_required =
-        prepared.config.mix_path && prepared.config.mix_path[0];
+    const std::string prepared_mix_path =
+        (prepared.config.mix_path && prepared.config.mix_path[0])
+            ? prepared.config.mix_path
+            : "";
     const std::string requested_mix_path =
-        mix_required ? prepared.config.mix_path : "";
-    if (mix_required && !allow_streaming_without_samples &&
+        native_mix_source && !native_mix_source->requested_mix_path.empty()
+            ? native_mix_source->requested_mix_path
+            : prepared_mix_path;
+    const bool mix_required = !requested_mix_path.empty();
+    const bool using_native_mix = mix_required && native_mix_source;
+    StagedMixFileCleanup staged_mix_cleanup(native_mix_source);
+    std::unique_ptr<SbxMixInput, MixInputDeleter> native_mix_input;
+    if (using_native_mix) {
+      std::string mix_error;
+      native_mix_input = open_native_mix_input_locked(
+          native_mix_source->file_path,
+          native_mix_source->path_hint,
+          native_mix_source->mix_section,
+          native_mix_source->looper_spec,
+          !prepared.config.have_r,
+          static_cast<int>(prepared.config.have_r ? prepared.config.rate : config_.sample_rate),
+          &mix_error);
+      if (!native_mix_input) {
+        mix_path_ = requested_mix_path;
+        return build_context_state_json_locked(
+            SBX_ENOTREADY,
+            mix_error.empty() ? "Failed to open the native mix input." : mix_error);
+      }
+
+      if (!prepared.config.have_r) {
+        const int output_rate = sbx_mix_input_output_rate(native_mix_input.get());
+        if (output_rate > 0) {
+          config_.sample_rate = static_cast<double>(output_rate);
+        }
+      }
+      mix_looping = !native_mix_source->looper_spec.empty();
+    }
+
+    if (mix_required && !using_native_mix && !allow_streaming_without_samples &&
         (!mix_samples || mix_sample_count < 2U)) {
       clear_locked();
       mix_path_ = requested_mix_path;
@@ -1859,20 +2069,157 @@ class BridgeRuntimeState {
       }
     }
 
-    duration_sec_ = sbx_context_duration_sec(next_ctx.get());
-    context_ = std::move(next_ctx);
-    mix_path_ = requested_mix_path;
-    mix_active_ = mix_required;
-    if (mix_required) {
-      mix_source_name_ = mix_source_name.empty() ? requested_mix_path : mix_source_name;
-      mix_looping_ = mix_looping;
-      mix_cursor_frame_ = 0U;
-      if (mix_samples && mix_sample_count > 0U) {
-        mix_samples_.assign(mix_samples, mix_samples + mix_sample_count);
+    const double duration_sec = sbx_context_duration_sec(next_ctx.get());
+    staged_mix_cleanup.dismiss();
+    return adopt_context_locked(std::move(next_ctx),
+                                duration_sec,
+                                requested_mix_path,
+                                mix_source_name,
+                                mix_looping,
+                                mix_samples,
+                                mix_sample_count,
+                                std::move(native_mix_input),
+                                native_mix_source);
+  }
+
+  std::unique_ptr<SbxMixInput, MixInputDeleter> open_native_mix_input_locked(
+      const std::string &file_path,
+      const std::string &path_hint,
+      int mix_section,
+      const std::string &looper_spec,
+      bool output_rate_is_default,
+      int desired_output_rate_hz,
+      std::string *out_error) {
+    FILE *stream = std::fopen(file_path.c_str(), "rb");
+    if (!stream) {
+      if (out_error) {
+        std::ostringstream msg;
+        msg << "Failed to open mix input '" << file_path << "': "
+            << std::strerror(errno);
+        *out_error = msg.str();
       }
+      return nullptr;
     }
 
-    return build_context_state_json_locked(SBX_OK, "");
+    SbxMixInputConfig cfg{};
+    sbx_default_mix_input_config(&cfg);
+    cfg.mix_section = mix_section;
+    cfg.output_rate_hz = desired_output_rate_hz > 0 ? desired_output_rate_hz : 44100;
+    cfg.output_rate_is_default = output_rate_is_default ? 1 : 0;
+    cfg.take_stream_ownership = 1;
+    cfg.looper_spec_override =
+        looper_spec.empty() ? nullptr : looper_spec.c_str();
+
+    std::unique_ptr<SbxMixInput, MixInputDeleter> input(
+        sbx_mix_input_create_stdio(
+            stream,
+            path_hint.empty() ? file_path.c_str() : path_hint.c_str(),
+            &cfg));
+    if (!input) {
+      std::fclose(stream);
+      if (out_error) {
+        *out_error = "Failed to allocate native mix input.";
+      }
+      return nullptr;
+    }
+
+    const char *mix_error = sbx_mix_input_last_error(input.get());
+    if (mix_error && mix_error[0]) {
+      if (out_error) {
+        *out_error = mix_error;
+      }
+      return nullptr;
+    }
+
+    return input;
+  }
+
+  bool reopen_native_mix_input_locked(std::string *out_error) {
+    if (!mix_native_input_) {
+      return true;
+    }
+    mix_input_.reset();
+    mix_input_ = open_native_mix_input_locked(mix_file_path_,
+                                              mix_path_hint_,
+                                              mix_section_,
+                                              mix_looper_spec_,
+                                              false,
+                                              static_cast<int>(config_.sample_rate),
+                                              out_error);
+    return static_cast<bool>(mix_input_);
+  }
+
+  std::unique_ptr<SbxMixInput, MixInputDeleter>
+  create_preview_native_mix_input_locked(std::string *out_error) {
+    if (!mix_native_input_) {
+      return nullptr;
+    }
+    return open_native_mix_input_locked(mix_file_path_,
+                                        mix_path_hint_,
+                                        mix_section_,
+                                        mix_looper_spec_,
+                                        false,
+                                        static_cast<int>(config_.sample_rate),
+                                        out_error);
+  }
+
+  void cleanup_staged_mix_file_locked() {
+    if (mix_delete_on_release_ && !mix_file_path_.empty()) {
+      std::remove(mix_file_path_.c_str());
+    }
+    mix_delete_on_release_ = false;
+    mix_file_path_.clear();
+  }
+
+  int apply_native_mix_input_locked(float *io,
+                                    size_t frames,
+                                    double start_time_sec,
+                                    SbxMixInput *mix_input) {
+    if (!context_ || !io || !mix_input) {
+      return SBX_OK;
+    }
+
+    const double sample_rate = config_.sample_rate;
+    if (!(std::isfinite(sample_rate) && sample_rate > 0.0)) {
+      return SBX_ENOTREADY;
+    }
+
+    const size_t sample_count = frames * 2U;
+    mix_read_buffer_.resize(sample_count);
+    const int read_count =
+        sbx_mix_input_read(mix_input, mix_read_buffer_.data(), sample_count);
+    if (read_count < 0) {
+      return SBX_ENOTREADY;
+    }
+
+    const size_t samples_to_mix =
+        static_cast<size_t>(read_count - (read_count % 2));
+    const size_t frames_to_mix = samples_to_mix / 2U;
+    for (size_t frame = 0; frame < frames_to_mix; ++frame) {
+      double mix_add_l = 0.0;
+      double mix_add_r = 0.0;
+      const size_t sample_index = frame * 2U;
+      const int status = sbx_context_mix_stream_sample(
+          context_.get(),
+          start_time_sec + static_cast<double>(frame) / sample_rate,
+          mix_read_buffer_[sample_index],
+          mix_read_buffer_[sample_index + 1U],
+          1.0,
+          &mix_add_l,
+          &mix_add_r);
+      if (status != SBX_OK) {
+        return status;
+      }
+
+      const double out_l =
+          static_cast<double>(io[sample_index]) * 32767.0 + mix_add_l;
+      const double out_r =
+          static_cast<double>(io[sample_index + 1U]) * 32767.0 + mix_add_r;
+      io[sample_index] = clamp_unit_float(out_l / 32767.0);
+      io[sample_index + 1U] = clamp_unit_float(out_r / 32767.0);
+    }
+
+    return SBX_OK;
   }
 
   std::string build_context_state_json_locked(
@@ -1893,6 +2240,10 @@ class BridgeRuntimeState {
          << "\"sourceName\":\"" << escape_json(source_name_) << "\","
          << "\"mixActive\":" << (mix_active_ ? "true" : "false") << ','
          << "\"mixLooping\":" << (mix_looping_ ? "true" : "false") << ','
+         << "\"mixBackend\":\""
+         << (mix_native_input_ ? "native"
+                               : (mix_active_ && !mix_samples_.empty() ? "pcm" : ""))
+         << "\","
          << "\"mixPath\":\"" << escape_json(mix_path_) << "\","
          << "\"mixSourceName\":\"" << escape_json(mix_source_name_) << "\","
          << "\"error\":\"" << escape_json(error) << "\""
@@ -1928,6 +2279,10 @@ class BridgeRuntimeState {
          << "\"sourceName\":\"" << escape_json(source_name_) << "\","
          << "\"mixActive\":" << (mix_active_ ? "true" : "false") << ','
          << "\"mixLooping\":" << (mix_looping_ ? "true" : "false") << ','
+         << "\"mixBackend\":\""
+         << (mix_native_input_ ? "native"
+                               : (mix_active_ && !mix_samples_.empty() ? "pcm" : ""))
+         << "\","
          << "\"mixPath\":\"" << escape_json(mix_path_) << "\","
          << "\"mixSourceName\":\"" << escape_json(mix_source_name_) << "\","
          << "\"error\":\"" << escape_json(error) << "\","
@@ -1944,6 +2299,13 @@ class BridgeRuntimeState {
   }
 
   std::string context_error_locked() const {
+    if (mix_native_input_ && mix_input_) {
+      const char *mix_error = sbx_mix_input_last_error(mix_input_.get());
+      if (mix_error && mix_error[0]) {
+        return mix_error;
+      }
+    }
+
     if (!context_) {
       return {};
     }
@@ -1953,16 +2315,23 @@ class BridgeRuntimeState {
   }
 
   void clear_locked() {
+    mix_input_.reset();
+    cleanup_staged_mix_file_locked();
     context_.reset();
     source_name_.clear();
     duration_sec_ = 0.0;
     preview_buffer_.clear();
+    mix_read_buffer_.clear();
     mix_samples_.clear();
     mix_path_.clear();
+    mix_path_hint_.clear();
     mix_source_name_.clear();
+    mix_looper_spec_.clear();
     mix_cursor_frame_ = 0U;
+    mix_section_ = -1;
     mix_active_ = false;
     mix_looping_ = false;
+    mix_native_input_ = false;
   }
 
   int apply_stored_mix_stream_locked(float *io,
@@ -2073,12 +2442,20 @@ class BridgeRuntimeState {
   std::string source_name_;
   double duration_sec_ = 0.0;
   std::vector<float> preview_buffer_;
+  std::vector<int> mix_read_buffer_;
   std::vector<int16_t> mix_samples_;
+  std::unique_ptr<SbxMixInput, MixInputDeleter> mix_input_;
   std::string mix_path_;
+  std::string mix_file_path_;
+  std::string mix_path_hint_;
   std::string mix_source_name_;
+  std::string mix_looper_spec_;
   size_t mix_cursor_frame_ = 0U;
+  int mix_section_ = -1;
   bool mix_active_ = false;
   bool mix_looping_ = false;
+  bool mix_native_input_ = false;
+  bool mix_delete_on_release_ = false;
 };
 
 BridgeRuntimeState &runtime_state() {
@@ -2367,6 +2744,35 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareSbgContextStreaming(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareSbgContextStdio(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring text,
+    jstring source_name,
+    jstring requested_mix_path,
+    jstring mix_file_path,
+    jstring mix_path_hint,
+    jstring mix_source_name,
+    jint mix_section,
+    jstring mix_looper_spec,
+    jboolean delete_on_release) {
+  NativeMixSourceRequest mix_source;
+  mix_source.requested_mix_path = jstring_to_utf8(env, requested_mix_path);
+  mix_source.file_path = jstring_to_utf8(env, mix_file_path);
+  mix_source.path_hint = jstring_to_utf8(env, mix_path_hint);
+  mix_source.source_name = jstring_to_utf8(env, mix_source_name);
+  mix_source.mix_section = static_cast<int>(mix_section);
+  mix_source.looper_spec = jstring_to_utf8(env, mix_looper_spec);
+  mix_source.delete_on_release = delete_on_release == JNI_TRUE;
+
+  return to_jstring(
+      env,
+      runtime_state().prepare_sbg_context_stdio(jstring_to_utf8(env, text),
+                                                jstring_to_utf8(env, source_name),
+                                                mix_source));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareProgramContext(
     JNIEnv *env,
     jobject /* this */,
@@ -2466,6 +2872,61 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareProgramContextStreami
           request,
           jstring_to_utf8(env, mix_source_name),
           mix_looping == JNI_TRUE));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareProgramContextStdio(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring program_kind,
+    jstring main_arg,
+    jint drop_time_sec,
+    jint hold_time_sec,
+    jint wake_time_sec,
+    jstring curve_text,
+    jstring source_name,
+    jstring requested_mix_path,
+    jstring mix_file_path,
+    jstring mix_path_hint,
+    jstring mix_source_name,
+    jint mix_section,
+    jstring mix_looper_spec,
+    jboolean delete_on_release) {
+  ProgramRequest request;
+  std::string request_error;
+  const std::string safe_source_name = jstring_to_utf8(env, source_name);
+  const std::string safe_mix_path = jstring_to_utf8(env, requested_mix_path);
+  if (!make_program_request(jstring_to_utf8(env, program_kind),
+                            jstring_to_utf8(env, main_arg),
+                            static_cast<int>(drop_time_sec),
+                            static_cast<int>(hold_time_sec),
+                            static_cast<int>(wake_time_sec),
+                            jstring_to_utf8(env, curve_text),
+                            safe_source_name,
+                            safe_mix_path,
+                            &request,
+                            &request_error)) {
+    return to_jstring(
+        env,
+        build_sbg_runtime_config_json(SBX_EINVAL,
+                                      safe_source_name,
+                                      44100.0,
+                                      safe_mix_path,
+                                      request_error));
+  }
+
+  NativeMixSourceRequest mix_source;
+  mix_source.requested_mix_path = safe_mix_path;
+  mix_source.file_path = jstring_to_utf8(env, mix_file_path);
+  mix_source.path_hint = jstring_to_utf8(env, mix_path_hint);
+  mix_source.source_name = jstring_to_utf8(env, mix_source_name);
+  mix_source.mix_section = static_cast<int>(mix_section);
+  mix_source.looper_spec = jstring_to_utf8(env, mix_looper_spec);
+  mix_source.delete_on_release = delete_on_release == JNI_TRUE;
+
+  return to_jstring(
+      env,
+      runtime_state().prepare_program_context_stdio(request, mix_source));
 }
 
 extern "C" JNIEXPORT jstring JNICALL

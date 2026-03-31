@@ -19,6 +19,7 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   private val localDocumentStore = LocalDocumentStore(reactContext)
   private val runtimeLoader =
       SbgRuntimeLoader(
+          NativeMixInputResolver(reactContext, localDocumentStore),
           MixInputResolver(reactContext, localDocumentStore),
           StreamingMixInputResolver(reactContext, localDocumentStore),
       )

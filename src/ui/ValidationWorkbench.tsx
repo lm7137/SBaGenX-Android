@@ -50,10 +50,10 @@ const brandIcon = require('../assets/sbagenx-icon.png');
 const heroBlueOrb = require('../assets/hero-blue-orb.png');
 const heroPinkOrb = require('../assets/hero-pink-orb.png');
 
-const SURFACE_SOFT = 'rgba(235, 235, 229, 0.84)';
-const SURFACE_GLASS = 'rgba(232, 232, 226, 0.74)';
-const SURFACE_BORDER = 'rgba(255, 255, 255, 0.08)';
-const SURFACE_BORDER_LIGHT = SURFACE_GLASS;
+const SURFACE_SOFT = 'rgba(235, 235, 229, 0.74)';
+const SURFACE_GLASS = 'rgba(232, 232, 226, 0.65)';
+const SURFACE_BORDER = 'rgba(255, 255, 255, 0.10)';
+const SURFACE_BORDER_LIGHT = 'rgba(255, 255, 255, 0.18)';
 
 const DEFAULT_SBG_NAME = 'examples/plus/deep-sleep-aid.sbg';
 const DEFAULT_SBGF_NAME = 'examples/basics/curve-expfit-solve-demo.sbgf';
@@ -63,10 +63,10 @@ const DEFAULT_PROGRAM_TIMES = {
   wakeMinutes: '3',
 };
 const DEFAULT_PROGRAM_MAIN_ARGS: Record<ProgramKind, string> = {
-  drop: '00s+^',
-  sigmoid: '00s+^:l=0.125',
-  slide: '200+10/20',
-  curve: '00ls:l=0.15',
+  drop: '00ls+^/1',
+  sigmoid: '00ls+^/1:l=0.125',
+  slide: '200+10/1',
+  curve: '00ls/1:l=0.15',
 };
 
 const VALID_SBG_SAMPLE =
@@ -980,7 +980,7 @@ export function ValidationWorkbench() {
           ) : null}
 
           {!isUsingLibraryFolder ? (
-            <View style={[styles.card, styles.cardSoft, styles.panel]}>
+            <GlassCard style={styles.panel}>
               <Text style={styles.panelKicker}>Storage</Text>
               <Text style={styles.panelTitle}>Choose a document library</Text>
               <Text style={styles.panelSub}>
@@ -1011,7 +1011,7 @@ export function ValidationWorkbench() {
                 Mixes are still picked system-wide and stay in their original
                 location.
               </Text>
-            </View>
+            </GlassCard>
           ) : null}
 
           <GlassCard style={styles.panel}>
@@ -1339,7 +1339,7 @@ export function ValidationWorkbench() {
             </GlassCard>
           ) : null}
 
-          <View style={[styles.card, styles.cardSoft, styles.panel]}>
+          <GlassCard style={styles.panel}>
             <Text style={styles.panelKicker}>Runtime</Text>
             <Text style={styles.panelTitle}>Render and playback</Text>
             <Text style={styles.panelSub}>
@@ -1481,7 +1481,7 @@ export function ValidationWorkbench() {
                 )}
               </View>
             ) : null}
-          </View>
+          </GlassCard>
 
           <GlassCard style={styles.panel}>
             <Text style={styles.panelKicker}>Diagnostics</Text>
@@ -1614,7 +1614,7 @@ export function ValidationWorkbench() {
           </GlassCard>
 
           {isUsingLibraryFolder ? (
-            <View style={[styles.card, styles.cardSoft, styles.panel]}>
+            <GlassCard style={styles.panel}>
               <Text style={styles.panelKicker}>Storage</Text>
               <Text style={styles.panelTitle}>Document library</Text>
               <Text style={styles.panelSub}>
@@ -1646,7 +1646,7 @@ export function ValidationWorkbench() {
                 Mixes are still picked system-wide and stay in their original
                 location.
               </Text>
-            </View>
+            </GlassCard>
           ) : null}
         </ScrollView>
 

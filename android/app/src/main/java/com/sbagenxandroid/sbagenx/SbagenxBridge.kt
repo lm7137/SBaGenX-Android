@@ -28,6 +28,18 @@ object SbagenxBridge {
       mixLooping: Boolean,
   ): String
 
+  external fun nativePrepareSbgContextStdio(
+      text: String,
+      sourceName: String,
+      requestedMixPath: String,
+      mixFilePath: String,
+      mixPathHint: String,
+      mixSourceName: String,
+      mixSection: Int,
+      mixLooperSpec: String,
+      deleteOnRelease: Boolean,
+  ): String
+
   external fun nativePrepareProgramContext(
       programKind: String,
       mainArg: String,
@@ -53,6 +65,23 @@ object SbagenxBridge {
       mixPath: String,
       mixSourceName: String,
       mixLooping: Boolean,
+  ): String
+
+  external fun nativePrepareProgramContextStdio(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String,
+      requestedMixPath: String,
+      mixFilePath: String,
+      mixPathHint: String,
+      mixSourceName: String,
+      mixSection: Int,
+      mixLooperSpec: String,
+      deleteOnRelease: Boolean,
   ): String
 
   external fun nativeParseMixLooperSpec(
