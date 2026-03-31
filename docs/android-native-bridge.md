@@ -16,7 +16,8 @@ The current bridge proves the minimum useful path:
 - preview PCM rendering from JNI
 - live Android playback via `AudioTrack`
 - safe `-SE` preamble parsing before `.sbg` runtime prepare
-- Android-side mix-source resolution and decode for `.sbg` `-m` inputs
+- Android-side mix-source resolution and decode for `.sbg` `-m` inputs and built-in program mixes
+- app/UI-state `SBAGEN_LOOPER` overrides for loaded mixes
 - app-local draft persistence through the React Native module
 
 The current vendored snapshot matches the local `SBaGenX` repo's current `sbagenxlib` files. For upstream reference, prefer the `main` branch there.
@@ -26,11 +27,11 @@ The current vendored snapshot matches the local `SBaGenX` repo's current `sbagen
 - `getBridgeInfo()`
 - `validateSbg(text, sourceName)`
 - `validateSbgf(text, sourceName)`
-- `prepareSbgContext(text, sourceName)`
+- `prepareSbgContext(text, sourceName, mixPathOverride?, mixLooperSpec?)`
 - `getContextState()`
 - `renderPreview(frameCount, sampleValueCount)`
 - `resetContext()`
-- `startPlayback(text, sourceName)`
+- `startPlayback(text, sourceName, mixPathOverride?, mixLooperSpec?)`
 - `stopPlayback()`
 - `getPlaybackState()`
 - `listDocuments()`
@@ -46,9 +47,10 @@ The JNI layer now owns a process-local runtime wrapper around `SbxContext`.
 - `.sbg` text can be loaded into a persistent native context
 - safe sequence preambles are parsed before the timing loader runs
 - preview calls render PCM float blocks without committing to audio output
-- decoded mix PCM is stored natively and applied through `sbx_context_mix_stream_sample()`
+- decoded mix PCM is applied through `sbx_context_mix_stream_sample()`
 - playback reuses the same context model and pulls PCM into an Android `AudioTrack`
 - the JS layer polls context and playback state rather than duplicating render logic
+- sequence-mode mix path and `SBAGEN_LOOPER` now live in app state, with `.sbg` preamble `-m` acting only as a fallback source
 
 At the moment, `.sbgf` support includes validation plus curve-info inspection. Playback and preview are still intentionally limited to `.sbg` until the runtime surface for curves and beat generation is defined.
 

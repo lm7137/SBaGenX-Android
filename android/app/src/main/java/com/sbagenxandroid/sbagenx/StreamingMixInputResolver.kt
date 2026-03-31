@@ -7,6 +7,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.provider.OpenableColumns
 import java.io.Closeable
 import java.io.File
 import java.io.FileInputStream
@@ -22,7 +23,7 @@ import kotlin.math.roundToInt
 data class PreparedStreamingMixInput(
     val sourceName: String,
     val looping: Boolean,
-    val decoder: StreamingMixInputResolver.StreamingMixDecoder,
+    val decoder: MixFrameReader,
 )
 
 class StreamingMixInputResolver(
@@ -33,19 +34,53 @@ class StreamingMixInputResolver(
       mixPath: String,
       sourceName: String,
       targetSampleRate: Int,
+      mixLooperSpec: String? = null,
   ): PreparedStreamingMixInput {
     val source = resolveSource(mixPath, sourceName)
-    val looping = source.loopingHint || hasSbagenLooperMetadata(source)
+    val format = source.format
+    val explicitLooperSpec = mixLooperSpec?.trim()?.takeIf { it.isNotEmpty() }
+
+    if (explicitLooperSpec != null && format !in setOf(MixFormat.OGG, MixFormat.FLAC)) {
+      throw IllegalArgumentException(
+          "SBAGEN_LOOPER override is currently supported only for OGG and FLAC mix inputs.",
+      )
+    }
+
+    val embeddedLooperSpec =
+        if (explicitLooperSpec == null && format in setOf(MixFormat.OGG, MixFormat.FLAC)) {
+          extractSbagenLooperSpec(source)
+        } else {
+          null
+        }
+    val effectiveLooperSpec = explicitLooperSpec ?: embeddedLooperSpec
+
+    val decoder: MixFrameReader
+    val looping: Boolean
+    if (effectiveLooperSpec != null) {
+      val decoded = decodeToStereoPcm(source, targetSampleRate.coerceAtLeast(1))
+      val plan =
+          parseLooperPlan(
+              effectiveLooperSpec,
+              decoded.sampleRate,
+              decoded.samples.size / 2,
+          )
+      decoder = LooperMixDecoder(decoded.samples, plan)
+      looping = true
+    } else {
+      decoder =
+          StreamingMixDecoder(
+              context = context,
+              source = source,
+              targetSampleRate = targetSampleRate.coerceAtLeast(1),
+              looping = false,
+          )
+      looping = false
+    }
+
     return PreparedStreamingMixInput(
         sourceName = source.displayName,
         looping = looping,
-        decoder =
-            StreamingMixDecoder(
-                context = context,
-                source = source,
-                targetSampleRate = targetSampleRate.coerceAtLeast(1),
-                looping = looping,
-            ),
+        decoder = decoder,
     )
   }
 
@@ -57,7 +92,8 @@ class StreamingMixInputResolver(
       return AssetMixStreamSource(
           assetPath = normalizedPath.removePrefix("asset://"),
           displayName = normalizedPath,
-          loopingHint = true,
+          loopingHint = false,
+          format = inferFormat(normalizedPath),
       )
     }
 
@@ -65,15 +101,19 @@ class StreamingMixInputResolver(
       return AssetMixStreamSource(
           assetPath = normalizedPath.removePrefix("asset:"),
           displayName = normalizedPath,
-          loopingHint = true,
+          loopingHint = false,
+          format = inferFormat(normalizedPath),
       )
     }
 
     if (normalizedPath.startsWith("content://")) {
+      val uri = Uri.parse(normalizedPath)
+      val displayName = queryDisplayName(uri) ?: normalizedPath
       return UriMixStreamSource(
-          uri = Uri.parse(normalizedPath),
-          displayName = normalizedPath,
+          uri = uri,
+          displayName = displayName,
           loopingHint = false,
+          format = inferFormat(displayName),
       )
     }
 
@@ -83,6 +123,7 @@ class StreamingMixInputResolver(
           file = File(filePath),
           displayName = normalizedPath,
           loopingHint = false,
+          format = inferFormat(normalizedPath),
       )
     }
 
@@ -92,6 +133,7 @@ class StreamingMixInputResolver(
           file = absoluteFile,
           displayName = absoluteFile.absolutePath,
           loopingHint = false,
+          format = inferFormat(absoluteFile.name),
       )
     }
 
@@ -100,6 +142,7 @@ class StreamingMixInputResolver(
           uri = libraryDocument.uri,
           displayName = libraryDocument.displayName,
           loopingHint = false,
+          format = inferFormat(libraryDocument.displayName),
       )
     }
 
@@ -108,6 +151,7 @@ class StreamingMixInputResolver(
           file = relativeFile,
           displayName = relativeFile.absolutePath,
           loopingHint = false,
+          format = inferFormat(relativeFile.name),
       )
     }
 
@@ -115,7 +159,8 @@ class StreamingMixInputResolver(
       return AssetMixStreamSource(
           assetPath = normalizedPath,
           displayName = "asset:$normalizedPath",
-          loopingHint = true,
+          loopingHint = false,
+          format = inferFormat(normalizedPath),
       )
     }
 
@@ -166,7 +211,7 @@ class StreamingMixInputResolver(
     }
   }
 
-  private fun hasSbagenLooperMetadata(source: MixStreamSource): Boolean {
+  private fun extractSbagenLooperSpec(source: MixStreamSource): String? {
     source.openMetadataStream(context)?.use { stream ->
       val overlapSize = SBAGEN_LOOPER_MARKER.size - 1
       val buffer = ByteArray(8192)
@@ -176,15 +221,23 @@ class StreamingMixInputResolver(
       while (scannedBytes < MAX_LOOPER_SCAN_BYTES) {
         val read = stream.read(buffer, 0, min(buffer.size, MAX_LOOPER_SCAN_BYTES - scannedBytes))
         if (read < 0) {
-          return false
+          return null
         }
         scannedBytes += read
 
         val chunk = ByteArray(carry.size + read)
         System.arraycopy(carry, 0, chunk, 0, carry.size)
         System.arraycopy(buffer, 0, chunk, carry.size, read)
-        if (indexOf(chunk, SBAGEN_LOOPER_MARKER) >= 0) {
-          return true
+        val markerIndex = indexOf(chunk, SBAGEN_LOOPER_MARKER)
+        if (markerIndex >= 0) {
+          val spec =
+              extractLooperSpecFromChunk(
+                  chunk,
+                  markerIndex + SBAGEN_LOOPER_MARKER.size,
+              )
+          if (!spec.isNullOrBlank()) {
+            return spec
+          }
         }
 
         val keep = min(overlapSize, chunk.size)
@@ -192,7 +245,7 @@ class StreamingMixInputResolver(
       }
     }
 
-    return false
+    return null
   }
 
   private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
@@ -217,9 +270,267 @@ class StreamingMixInputResolver(
     return -1
   }
 
-  sealed interface MixStreamSource {
+  private fun extractLooperSpecFromChunk(chunk: ByteArray, startIndex: Int): String? {
+    if (startIndex >= chunk.size) {
+      return null
+    }
+
+    val builder = StringBuilder()
+    for (index in startIndex until chunk.size) {
+      val value = chunk[index].toInt() and 0xff
+      if (!isLikelyLooperChar(value)) {
+        break
+      }
+      builder.append(value.toChar())
+    }
+
+    return builder.toString().trim().takeIf { it.isNotEmpty() }
+  }
+
+  private fun isLikelyLooperChar(value: Int): Boolean {
+    val char = value.toChar()
+    return char.isLetterOrDigit() ||
+        char == ' ' ||
+        char == '\t' ||
+        char == '.' ||
+        char == '-' ||
+        char == '#' ||
+        char == '+' ||
+        char == ':' ||
+        char == '_'
+  }
+
+  private fun decodeToStereoPcm(
+      source: MixStreamSource,
+      targetSampleRate: Int,
+  ): DecodedStereoPcm {
+    val dataSource = source.openDataSource(context)
+    val extractor = MediaExtractor()
+    var decoder: MediaCodec? = null
+
+    try {
+      dataSource.setDataSource(extractor)
+      val trackIndex = findAudioTrack(extractor)
+      require(trackIndex >= 0) {
+        "No audio track was found in mix source '${source.displayName}'."
+      }
+
+      extractor.selectTrack(trackIndex)
+      val inputFormat = extractor.getTrackFormat(trackIndex)
+      val mime =
+          inputFormat.getString(MediaFormat.KEY_MIME)
+              ?: throw IllegalArgumentException("Unsupported mix format: missing MIME type.")
+
+      decoder = MediaCodec.createDecoderByType(mime)
+      decoder.configure(inputFormat, null, null, 0)
+      decoder.start()
+
+      val output = StereoFrameQueue()
+      val info = MediaCodec.BufferInfo()
+      var inputDone = false
+      var outputDone = false
+      var outputSampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+      var outputChannelCount = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+      var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
+
+      while (!outputDone) {
+        if (!inputDone) {
+          val inputIndex = decoder.dequeueInputBuffer(CODEC_TIMEOUT_US)
+          if (inputIndex >= 0) {
+            val inputBuffer =
+                decoder.getInputBuffer(inputIndex)
+                    ?: throw IllegalStateException("MediaCodec returned a null input buffer.")
+            val sampleSize = extractor.readSampleData(inputBuffer, 0)
+            if (sampleSize < 0) {
+              decoder.queueInputBuffer(
+                  inputIndex,
+                  0,
+                  0,
+                  0,
+                  MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+              )
+              inputDone = true
+            } else {
+              decoder.queueInputBuffer(
+                  inputIndex,
+                  0,
+                  sampleSize,
+                  extractor.sampleTime,
+                  extractor.sampleFlags,
+              )
+              extractor.advance()
+            }
+          }
+        }
+
+        when (val outputIndex = decoder.dequeueOutputBuffer(info, CODEC_TIMEOUT_US)) {
+          MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+          MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+            val format = decoder.outputFormat
+            outputSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            outputChannelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            pcmEncoding =
+                if (format.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                  format.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                } else {
+                  AudioFormat.ENCODING_PCM_16BIT
+                }
+          }
+          else -> {
+            if (outputIndex >= 0) {
+              if (info.size > 0) {
+                val outputBuffer =
+                    decoder.getOutputBuffer(outputIndex)
+                        ?: throw IllegalStateException("MediaCodec returned a null output buffer.")
+                outputBuffer.position(info.offset)
+                outputBuffer.limit(info.offset + info.size)
+                output.append(outputBuffer.slice(), pcmEncoding, outputChannelCount)
+              }
+
+              if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                outputDone = true
+              }
+              decoder.releaseOutputBuffer(outputIndex, false)
+            }
+          }
+        }
+      }
+
+      val decodedSamples = output.toShortArray()
+      require(decodedSamples.isNotEmpty()) {
+        "Decoded mix stream '${source.displayName}' did not produce any PCM data."
+      }
+      val samples =
+          if (outputSampleRate == targetSampleRate || targetSampleRate <= 0) {
+            decodedSamples
+          } else {
+            resampleStereo(decodedSamples, outputSampleRate, targetSampleRate)
+          }
+      return DecodedStereoPcm(
+          sampleRate = if (targetSampleRate > 0) targetSampleRate else outputSampleRate,
+          samples = samples,
+      )
+    } finally {
+      try {
+        decoder?.stop()
+      } catch (_: Throwable) {
+      }
+      decoder?.release()
+      extractor.release()
+      dataSource.close()
+    }
+  }
+
+  private fun resampleStereo(source: ShortArray, sourceRate: Int, targetRate: Int): ShortArray {
+    if (source.isEmpty() || sourceRate <= 0 || targetRate <= 0 || sourceRate == targetRate) {
+      return source
+    }
+
+    val sourceFrames = source.size / 2
+    if (sourceFrames <= 1) {
+      return source.copyOf()
+    }
+
+    val targetFrames = max(1, ((sourceFrames.toLong() * targetRate) / sourceRate).toInt())
+    val resampled = ShortArray(targetFrames * 2)
+    val positionStep = sourceRate.toDouble() / targetRate.toDouble()
+    var sourcePosition = 0.0
+
+    for (frameIndex in 0 until targetFrames) {
+      val baseFrame = min(sourcePosition.toInt(), sourceFrames - 1)
+      val nextFrame = min(baseFrame + 1, sourceFrames - 1)
+      val frac = sourcePosition - baseFrame
+
+      val baseLeft = source[baseFrame * 2].toInt()
+      val baseRight = source[baseFrame * 2 + 1].toInt()
+      val nextLeft = source[nextFrame * 2].toInt()
+      val nextRight = source[nextFrame * 2 + 1].toInt()
+
+      resampled[frameIndex * 2] = clampToShort(baseLeft + (nextLeft - baseLeft) * frac)
+      resampled[frameIndex * 2 + 1] =
+          clampToShort(baseRight + (nextRight - baseRight) * frac)
+
+      sourcePosition += positionStep
+    }
+
+    return resampled
+  }
+
+  private fun clampToShort(value: Double): Short {
+    val clamped = value.roundToInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+    return clamped.toShort()
+  }
+
+  private fun inferFormat(pathHint: String): MixFormat {
+    val normalized = pathHint.lowercase()
+    return when {
+      normalized.endsWith(".ogg") -> MixFormat.OGG
+      normalized.endsWith(".flac") -> MixFormat.FLAC
+      normalized.endsWith(".mp3") -> MixFormat.MP3
+      normalized.endsWith(".wav") -> MixFormat.WAV
+      else -> MixFormat.UNKNOWN
+    }
+  }
+
+  private fun queryDisplayName(uri: Uri): String? {
+    return context.contentResolver
+        .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor ->
+          if (!cursor.moveToFirst()) {
+            return@use null
+          }
+          val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (columnIndex >= 0) {
+            cursor.getString(columnIndex)
+          } else {
+            null
+          }
+        }
+  }
+
+  private fun parseLooperPlan(
+      looperSpec: String,
+      sampleRate: Int,
+      totalFrames: Int,
+  ): MixLooperPlan {
+    val planJson =
+        SbagenxBridge.nativeParseMixLooperSpec(looperSpec, sampleRate, totalFrames, 0)
+    val parsed = org.json.JSONObject(planJson)
+    if (parsed.optInt("status", -1) != 0) {
+      throw IllegalArgumentException(
+          parsed.optString("error").ifBlank { "Invalid SBAGEN_LOOPER override." },
+      )
+    }
+
+    return MixLooperPlan(
+        sourceStartFrame = parsed.getInt("sourceStartFrame"),
+        sourceFrameCount = parsed.getInt("sourceFrameCount"),
+        segmentMinFrames = parsed.getInt("segmentMinFrames"),
+        segmentMaxFrames = parsed.getInt("segmentMaxFrames"),
+        fadeFrames = parsed.getInt("fadeFrames"),
+        introFrames = parsed.getInt("introFrames"),
+        dualChannel = parsed.getBoolean("dualChannel"),
+        swapStereo = parsed.getBoolean("swapStereo"),
+    )
+  }
+
+  private enum class MixFormat {
+    OGG,
+    FLAC,
+    MP3,
+    WAV,
+    UNKNOWN,
+  }
+
+  private data class DecodedStereoPcm(
+      val sampleRate: Int,
+      val samples: ShortArray,
+  )
+
+  private sealed interface MixStreamSource {
     val displayName: String
     val loopingHint: Boolean
+    val format: MixFormat
 
     fun openDataSource(context: Context): OpenedDataSource
 
@@ -230,6 +541,7 @@ class StreamingMixInputResolver(
       val file: File,
       override val displayName: String,
       override val loopingHint: Boolean,
+      override val format: MixFormat,
   ) : MixStreamSource {
     override fun openDataSource(context: Context): OpenedDataSource {
       require(file.isFile) { "Mix file '$displayName' was not found." }
@@ -245,6 +557,7 @@ class StreamingMixInputResolver(
       val uri: Uri,
       override val displayName: String,
       override val loopingHint: Boolean,
+      override val format: MixFormat,
   ) : MixStreamSource {
     override fun openDataSource(context: Context): OpenedDataSource {
       return UriDataSource(context, uri, displayName)
@@ -259,6 +572,7 @@ class StreamingMixInputResolver(
       val assetPath: String,
       override val displayName: String,
       override val loopingHint: Boolean,
+      override val format: MixFormat,
   ) : MixStreamSource {
     override fun openDataSource(context: Context): OpenedDataSource {
       require(assetExists(context, assetPath)) {
@@ -361,12 +675,12 @@ class StreamingMixInputResolver(
     }
   }
 
-  class StreamingMixDecoder internal constructor(
+  private class StreamingMixDecoder(
       private val context: Context,
       private val source: MixStreamSource,
       private val targetSampleRate: Int,
       val looping: Boolean,
-  ) : Closeable {
+  ) : MixFrameReader {
     private val decodedFrames = StereoFrameQueue()
 
     private var openedDataSource: OpenedDataSource? = null
@@ -380,10 +694,10 @@ class StreamingMixInputResolver(
     private var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
     private var sourceFrameCursor = 0.0
 
-    fun readFrames(
+    override fun readFrames(
         output: ShortArray,
         requestedFrames: Int,
-        isCancelled: (() -> Boolean)? = null,
+        isCancelled: (() -> Boolean)?,
     ): Int {
       require(requestedFrames >= 0) { "requestedFrames must not be negative." }
       require(output.size >= requestedFrames * 2) {
@@ -676,6 +990,14 @@ class StreamingMixInputResolver(
     fun leftAt(frameIndex: Int): Short = sampleAt(frameIndex * 2)
 
     fun rightAt(frameIndex: Int): Short = sampleAt(frameIndex * 2 + 1)
+
+    fun toShortArray(): ShortArray {
+      val out = ShortArray(size)
+      for (index in 0 until size) {
+        out[index] = data[(start + index) % data.size]
+      }
+      return out
+    }
 
     fun discardFrames(frameCount: Int) {
       if (frameCount <= 0 || size == 0) {

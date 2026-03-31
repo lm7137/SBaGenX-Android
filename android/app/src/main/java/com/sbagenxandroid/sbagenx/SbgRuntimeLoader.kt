@@ -16,6 +16,7 @@ data class ProgramRuntimeRequest(
     val curveText: String?,
     val sourceName: String,
     val mixPath: String?,
+    val mixLooperSpec: String?,
 )
 
 class SbgRuntimeLoader(
@@ -34,6 +35,43 @@ class SbgRuntimeLoader(
     val mixInput =
         try {
           mixPath?.let { mixInputResolver.resolve(it, sourceName, sampleRate) }
+        } catch (error: Throwable) {
+          return buildContextErrorJson(
+              sourceName = inspect.optString("sourceName", sourceName),
+              sampleRate = sampleRate,
+              mixPath = mixPath.orEmpty(),
+              errorMessage = error.message ?: "Failed to resolve mix input.",
+          )
+        }
+
+    return SbagenxBridge.nativePrepareSbgContext(
+        text,
+        sourceName,
+        mixInput?.samples,
+        mixInput?.sourceName.orEmpty(),
+        mixInput?.looping ?: false,
+    )
+  }
+
+  fun prepare(
+      text: String,
+      sourceName: String,
+      mixPathOverride: String?,
+      mixLooperSpec: String?,
+  ): String {
+    val inspect = JSONObject(SbagenxBridge.nativeInspectSbgRuntimeConfig(text, sourceName))
+    if (inspect.optInt("status", -1) != 0) {
+      return inspect.toString()
+    }
+
+    val mixPath =
+        mixPathOverride?.takeIf { it.isNotBlank() }
+            ?: inspect.optString("mixPath").takeIf { it.isNotBlank() }
+    val sampleRate = inspect.optInt("sampleRate", 44_100)
+
+    val mixInput =
+        try {
+          mixPath?.let { mixInputResolver.resolve(it, sourceName, sampleRate, mixLooperSpec) }
         } catch (error: Throwable) {
           return buildContextErrorJson(
               sourceName = inspect.optString("sourceName", sourceName),
@@ -98,13 +136,75 @@ class SbgRuntimeLoader(
     return PreparedPlaybackRuntime(stateJson, mixInput)
   }
 
+  fun prepareForPlayback(
+      text: String,
+      sourceName: String,
+      mixPathOverride: String?,
+      mixLooperSpec: String?,
+  ): PreparedPlaybackRuntime {
+    val inspect = JSONObject(SbagenxBridge.nativeInspectSbgRuntimeConfig(text, sourceName))
+    if (inspect.optInt("status", -1) != 0) {
+      return PreparedPlaybackRuntime(inspect.toString(), null)
+    }
+
+    val mixPath =
+        mixPathOverride?.takeIf { it.isNotBlank() }
+            ?: inspect.optString("mixPath").takeIf { it.isNotBlank() }
+    val sampleRate = inspect.optInt("sampleRate", 44_100)
+
+    val mixInput =
+        try {
+          mixPath?.let {
+            streamingMixInputResolver.open(it, sourceName, sampleRate, mixLooperSpec)
+          }
+        } catch (error: Throwable) {
+          return PreparedPlaybackRuntime(
+              buildContextErrorJson(
+                  sourceName = inspect.optString("sourceName", sourceName),
+                  sampleRate = sampleRate,
+                  mixPath = mixPath.orEmpty(),
+                  errorMessage = error.message ?: "Failed to resolve mix input.",
+              ),
+              null,
+          )
+        }
+
+    val stateJson =
+        try {
+          SbagenxBridge.nativePrepareSbgContextStreaming(
+              text,
+              sourceName,
+              mixInput?.sourceName.orEmpty(),
+              mixInput?.looping ?: false,
+          )
+        } catch (error: Throwable) {
+          mixInput?.decoder?.close()
+          throw error
+        }
+
+    val state = JSONObject(stateJson)
+    if (state.optInt("status", -1) != 0 || !state.optBoolean("prepared", false)) {
+      mixInput?.decoder?.close()
+      return PreparedPlaybackRuntime(stateJson, null)
+    }
+
+    return PreparedPlaybackRuntime(stateJson, mixInput)
+  }
+
   fun prepareProgram(request: ProgramRuntimeRequest): String {
     val sampleRate = 44_100
     val mixPath = request.mixPath?.takeIf { it.isNotBlank() }
 
     val mixInput =
         try {
-          mixPath?.let { mixInputResolver.resolve(it, request.sourceName, sampleRate) }
+          mixPath?.let {
+            mixInputResolver.resolve(
+                it,
+                request.sourceName,
+                sampleRate,
+                request.mixLooperSpec,
+            )
+          }
         } catch (error: Throwable) {
           return buildContextErrorJson(
               sourceName = request.sourceName,
@@ -135,7 +235,14 @@ class SbgRuntimeLoader(
 
     val mixInput =
         try {
-          mixPath?.let { streamingMixInputResolver.open(it, request.sourceName, sampleRate) }
+          mixPath?.let {
+            streamingMixInputResolver.open(
+                it,
+                request.sourceName,
+                sampleRate,
+                request.mixLooperSpec,
+            )
+          }
         } catch (error: Throwable) {
           return PreparedPlaybackRuntime(
               buildContextErrorJson(

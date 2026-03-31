@@ -119,13 +119,19 @@ export type ProgramRuntimeRequest = {
   curveText?: string | null;
   sourceName?: string;
   mixPath?: string | null;
+  mixLooperSpec?: string | null;
 };
 
 type NativeSbaGenXModule = {
   getBridgeInfo(): Promise<string>;
   validateSbg(text: string, sourceName?: string): Promise<string>;
   validateSbgf(text: string, sourceName?: string): Promise<string>;
-  prepareSbgContext(text: string, sourceName?: string): Promise<string>;
+  prepareSbgContext(
+    text: string,
+    sourceName?: string,
+    mixPathOverride?: string | null,
+    mixLooperSpec?: string | null,
+  ): Promise<string>;
   prepareProgramContext(
     programKind: ProgramKind,
     mainArg: string,
@@ -135,11 +141,17 @@ type NativeSbaGenXModule = {
     curveText?: string | null,
     sourceName?: string,
     mixPath?: string | null,
+    mixLooperSpec?: string | null,
   ): Promise<string>;
   getContextState(): Promise<string>;
   renderPreview(frameCount: number, sampleValueCount: number): Promise<string>;
   resetContext(): Promise<string>;
-  startPlayback(text: string, sourceName?: string): Promise<string>;
+  startPlayback(
+    text: string,
+    sourceName?: string,
+    mixPathOverride?: string | null,
+    mixLooperSpec?: string | null,
+  ): Promise<string>;
   startProgramPlayback(
     programKind: ProgramKind,
     mainArg: string,
@@ -149,6 +161,7 @@ type NativeSbaGenXModule = {
     curveText?: string | null,
     sourceName?: string,
     mixPath?: string | null,
+    mixLooperSpec?: string | null,
   ): Promise<string>;
   stopPlayback(): Promise<string>;
   getPlaybackState(): Promise<string>;
@@ -216,9 +229,16 @@ export async function validateDocument(
 export async function prepareSbgContext(
   text: string,
   sourceName?: string,
+  mixPathOverride?: string | null,
+  mixLooperSpec?: string | null,
 ): Promise<ContextState> {
   return parseNativeJson<ContextState>(
-    requireNativeModule().prepareSbgContext(text, sourceName ?? 'scratch.sbg'),
+    requireNativeModule().prepareSbgContext(
+      text,
+      sourceName ?? 'scratch.sbg',
+      mixPathOverride ?? null,
+      mixLooperSpec ?? null,
+    ),
   );
 }
 
@@ -239,6 +259,7 @@ export async function prepareProgramContext(
       request.curveText ?? null,
       request.sourceName ?? `program:${request.programKind}`,
       request.mixPath ?? null,
+      request.mixLooperSpec ?? null,
     ),
   );
 }
@@ -259,9 +280,16 @@ export async function resetContext(): Promise<ContextState> {
 export async function startPlayback(
   text: string,
   sourceName?: string,
+  mixPathOverride?: string | null,
+  mixLooperSpec?: string | null,
 ): Promise<PlaybackState> {
   return parseNativeJson<PlaybackState>(
-    requireNativeModule().startPlayback(text, sourceName ?? 'scratch.sbg'),
+    requireNativeModule().startPlayback(
+      text,
+      sourceName ?? 'scratch.sbg',
+      mixPathOverride ?? null,
+      mixLooperSpec ?? null,
+    ),
   );
 }
 
@@ -278,6 +306,7 @@ export async function startProgramPlayback(
       request.curveText ?? null,
       request.sourceName ?? `program:${request.programKind}`,
       request.mixPath ?? null,
+      request.mixLooperSpec ?? null,
     ),
   );
 }

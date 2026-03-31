@@ -199,29 +199,6 @@ function findSafePreambleMixPath(text: string): string | null {
   return null;
 }
 
-function upsertSafePreambleMixPath(text: string, mixPath: string): string {
-  const normalizedText = text.replace(/\r\n/g, '\n');
-  const lines = normalizedText.split('\n');
-  const optionBlock = findOptionBlockRange(lines);
-
-  if (!optionBlock) {
-    return ['-SE', `-m ${mixPath}`, '', normalizedText].join('\n');
-  }
-
-  for (let index = optionBlock.start; index <= optionBlock.end; index += 1) {
-    if (extractMixPathFromOptionLine(lines[index])) {
-      lines[index] = lines[index].replace(
-        /(^|\s)-m\s+\S+/u,
-        match => match.replace(/-m\s+\S+/u, `-m ${mixPath}`),
-      );
-      return lines.join('\n');
-    }
-  }
-
-  lines.splice(optionBlock.end + 1, 0, `-m ${mixPath}`);
-  return lines.join('\n');
-}
-
 function summarizeMixReference(mixPath: string): string {
   const trimmed = mixPath.trim();
   if (!trimmed) {
@@ -373,10 +350,14 @@ export function ValidationWorkbench() {
   const [sequenceMixDisplayName, setSequenceMixDisplayName] = useState<string | null>(
     null,
   );
+  const [sequenceMixPathOverride, setSequenceMixPathOverride] =
+    useState<string | null>(null);
+  const [sequenceMixLooperSpec, setSequenceMixLooperSpec] = useState('');
   const [programMixPath, setProgramMixPath] = useState<string | null>(null);
   const [programMixDisplayName, setProgramMixDisplayName] = useState<string | null>(
     null,
   );
+  const [programMixLooperSpec, setProgramMixLooperSpec] = useState('');
   const [isProgramPickerVisible, setIsProgramPickerVisible] = useState(false);
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
@@ -498,6 +479,8 @@ export function ValidationWorkbench() {
     () => findSafePreambleMixPath(sequenceText),
     [sequenceText],
   );
+  const effectiveSequenceMixPath =
+    sequenceMixPathOverride ?? sequenceMixPathInText;
   const currentProgramMainArg = programMainArgs[programKind];
   const documentStoreLabel = documentStoreInfo?.label ?? 'App sandbox';
   const isUsingLibraryFolder = documentStoreInfo?.mode === 'library';
@@ -585,6 +568,7 @@ export function ValidationWorkbench() {
           ? curveSourceName ?? curveResolvedName
           : `program:${programKind}`,
       mixPath: programMixPath,
+      mixLooperSpec: programMixLooperSpec.trim() || null,
     };
   }
 
@@ -604,7 +588,9 @@ export function ValidationWorkbench() {
       setSequenceFileName(name);
       setSequenceSourceName(sourceName ?? name);
       setSequenceText(loadedText);
+      setSequenceMixPathOverride(null);
       setSequenceMixDisplayName(null);
+      setSequenceMixLooperSpec('');
     } else {
       setRuntimeMode('program');
       setProgramKind('curve');
@@ -622,7 +608,14 @@ export function ValidationWorkbench() {
     try {
       const nextContext =
         runtimeMode === 'sequence'
-          ? await prepareSbgContext(sequenceText, activeSourceName)
+          ? await prepareSbgContext(
+              sequenceText,
+              activeSourceName,
+              sequenceMixPathOverride,
+              effectiveSequenceMixPath
+                ? sequenceMixLooperSpec.trim() || null
+                : null,
+            )
           : await prepareProgramContext(buildProgramRequest());
       setContextState(nextContext);
 
@@ -661,7 +654,14 @@ export function ValidationWorkbench() {
     try {
       const nextState =
         runtimeMode === 'sequence'
-          ? await startPlayback(sequenceText, activeSourceName)
+          ? await startPlayback(
+              sequenceText,
+              activeSourceName,
+              sequenceMixPathOverride,
+              effectiveSequenceMixPath
+                ? sequenceMixLooperSpec.trim() || null
+                : null,
+            )
           : await startProgramPlayback(buildProgramRequest());
       setPlaybackState(nextState);
       setBridgeError(nextState.lastError || null);
@@ -775,7 +775,6 @@ export function ValidationWorkbench() {
   function handleEditorTextChange(nextText: string) {
     if (activeDocumentKind === 'sbg') {
       setSequenceText(nextText);
-      setSequenceMixDisplayName(null);
     } else if (activeDocumentKind === 'sbgf') {
       setCurveText(nextText);
     }
@@ -797,11 +796,10 @@ export function ValidationWorkbench() {
       }
 
       if (runtimeMode === 'sequence') {
-        const nextText = upsertSafePreambleMixPath(sequenceText, picked.uri);
-        const replacedExistingMix = Boolean(sequenceMixPathInText);
-
-        setSequenceText(nextText);
+        const replacedExistingMix = Boolean(effectiveSequenceMixPath);
+        setSequenceMixPathOverride(picked.uri);
         setSequenceMixDisplayName(picked.displayName || null);
+        setSequenceMixLooperSpec('');
         setValidationState(
           `${
             replacedExistingMix ? 'Updated' : 'Added'
@@ -810,6 +808,7 @@ export function ValidationWorkbench() {
       } else {
         setProgramMixPath(picked.uri);
         setProgramMixDisplayName(picked.displayName || null);
+        setProgramMixLooperSpec('');
         setValidationState(
           `Selected mix input ${picked.displayName || picked.uri} for the ${programKindLabel(
             programKind,
@@ -1199,6 +1198,25 @@ export function ValidationWorkbench() {
                   No mix file selected for this program yet.
                 </Text>
               )}
+
+              {programMixPath ? (
+                <>
+                  <Text style={styles.fieldLabel}>SBAGEN_LOOPER</Text>
+                  <TextInput
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    onChangeText={setProgramMixLooperSpec}
+                    placeholder="i s928 f5 c1 w1 d218-1146"
+                    style={styles.input}
+                    value={programMixLooperSpec}
+                  />
+                  <Text style={styles.note}>
+                    Leave empty to use embedded{' '}
+                    <Text style={styles.inlineCode}>SBAGEN_LOOPER</Text>{' '}
+                    metadata, if present.
+                  </Text>
+                </>
+              ) : null}
             </GlassCard>
           ) : null}
 
@@ -1214,7 +1232,7 @@ export function ValidationWorkbench() {
                 {activeDocumentKind === 'sbg'
                   ? `Open, edit, and save .sbg files in ${
                       isUsingLibraryFolder ? documentStoreLabel : 'the app sandbox'
-                    }. Mix references live in the safe preamble.`
+                    }. Mix loading and SBAGEN_LOOPER live in app state, while any existing -m preamble entry is still respected as a fallback.`
                   : `Open, edit, and save the .sbgf file used by the curve program in ${
                       isUsingLibraryFolder ? documentStoreLabel : 'the app sandbox'
                     }.`}
@@ -1258,7 +1276,7 @@ export function ValidationWorkbench() {
                 />
                 {activeDocumentKind === 'sbg' ? (
                   <ActionButton
-                    label={sequenceMixPathInText ? 'Change Mix' : 'Add Mix'}
+                    label={effectiveSequenceMixPath ? 'Change Mix' : 'Add Mix'}
                     onPress={() => {
                       handleAddMix().catch(() => {});
                     }}
@@ -1280,14 +1298,33 @@ export function ValidationWorkbench() {
                 Inline diagnostics refresh automatically while you type.
               </Text>
 
-              {activeDocumentKind === 'sbg' && sequenceMixPathInText ? (
+              {activeDocumentKind === 'sbg' && effectiveSequenceMixPath ? (
                 <Text style={styles.note}>
                   Mix file:{' '}
                   <Text style={styles.inlineCode}>
                     {sequenceMixDisplayName ??
-                      summarizeMixReference(sequenceMixPathInText)}
+                      summarizeMixReference(effectiveSequenceMixPath)}
                   </Text>
                 </Text>
+              ) : null}
+
+              {activeDocumentKind === 'sbg' && effectiveSequenceMixPath ? (
+                <>
+                  <Text style={styles.fieldLabel}>SBAGEN_LOOPER</Text>
+                  <TextInput
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    onChangeText={setSequenceMixLooperSpec}
+                    placeholder="i s928 f5 c1 w1 d218-1146"
+                    style={styles.input}
+                    value={sequenceMixLooperSpec}
+                  />
+                  <Text style={styles.note}>
+                    Leave empty to use embedded{' '}
+                    <Text style={styles.inlineCode}>SBAGEN_LOOPER</Text>{' '}
+                    metadata, if present.
+                  </Text>
+                </>
               ) : null}
 
               <SbaGenXEditor

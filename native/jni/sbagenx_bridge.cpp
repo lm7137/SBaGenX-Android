@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -34,6 +35,17 @@ struct CurveInspection {
   bool available = false;
   SbxCurveInfo info{};
   std::vector<CurveParameterSnapshot> parameters;
+};
+
+struct MixLooperPlanSpec {
+  int source_start_frame = 0;
+  int source_frame_count = 0;
+  int segment_min_frames = 0;
+  int segment_max_frames = 0;
+  int fade_frames = 0;
+  int intro_frames = 0;
+  bool dual_channel = false;
+  bool swap_stereo = true;
 };
 
 std::string escape_json(const std::string &input) {
@@ -181,6 +193,189 @@ void append_float_array_json(std::ostringstream &json,
     json << values[index];
   }
   json << ']';
+}
+
+std::string build_mix_looper_plan_json(int status,
+                                       const MixLooperPlanSpec *plan,
+                                       const std::string &error) {
+  std::ostringstream json;
+  json << '{'
+       << "\"status\":" << status << ','
+       << "\"statusText\":\"" << escape_json(status_text(status)) << "\","
+       << "\"error\":\"" << escape_json(error) << '"';
+
+  if (plan) {
+    json << ','
+         << "\"sourceStartFrame\":" << plan->source_start_frame << ','
+         << "\"sourceFrameCount\":" << plan->source_frame_count << ','
+         << "\"segmentMinFrames\":" << plan->segment_min_frames << ','
+         << "\"segmentMaxFrames\":" << plan->segment_max_frames << ','
+         << "\"fadeFrames\":" << plan->fade_frames << ','
+         << "\"introFrames\":" << plan->intro_frames << ','
+         << "\"dualChannel\":" << (plan->dual_channel ? "true" : "false")
+         << ','
+         << "\"swapStereo\":" << (plan->swap_stereo ? "true" : "false");
+  }
+
+  json << '}';
+  return json.str();
+}
+
+bool parse_mix_looper_plan(const std::string &spec,
+                           int sample_rate,
+                           int total_frames,
+                           int mix_section,
+                           MixLooperPlanSpec *out,
+                           std::string *error_out) {
+  if (!out) {
+    if (error_out) {
+      *error_out = "Missing looper plan output.";
+    }
+    return false;
+  }
+  if (sample_rate <= 0) {
+    if (error_out) {
+      *error_out = "Sample rate must be positive for SBAGEN_LOOPER parsing.";
+    }
+    return false;
+  }
+  if (total_frames <= 0) {
+    if (error_out) {
+      *error_out = "Mix input did not produce any PCM frames for SBAGEN_LOOPER parsing.";
+    }
+    return false;
+  }
+
+  const char *looper = spec.c_str();
+  bool intro = false;
+  int prev_flag = 0;
+  bool on = true;
+  const int active_section = mix_section < 0 ? 0 : mix_section;
+
+  int data_count = total_frames;
+  int data_base = 0;
+  int seg0 = data_count;
+  int seg1 = data_count;
+  int fade_count = sample_rate;
+  bool dual_channel = false;
+  bool swap_stereo = true;
+
+  if (*looper == 'i') {
+    if (std::isspace(static_cast<unsigned char>(looper[1])) != 0) {
+      intro = true;
+    }
+    ++looper;
+  }
+
+  while (*looper != '\0') {
+    char flag = *looper++;
+    if (std::isspace(static_cast<unsigned char>(flag)) != 0) {
+      continue;
+    }
+    if (!std::strchr("s-fcwd#", flag)) {
+      continue;
+    }
+    if (flag == '-') {
+      switch (prev_flag) {
+        case 's':
+          flag = 'S';
+          break;
+        case 'd':
+          flag = 'D';
+          break;
+        default:
+          continue;
+      }
+    }
+    prev_flag = flag;
+
+    char *number_end = nullptr;
+    const double value = std::strtod(looper, &number_end);
+    if (number_end == looper || !std::isfinite(value)) {
+      continue;
+    }
+    looper = number_end;
+
+    if (flag == '#') {
+      on = (static_cast<int>(value) == active_section);
+      continue;
+    }
+    if (!on) {
+      continue;
+    }
+
+    switch (flag) {
+      case 's':
+        seg0 = seg1 = static_cast<int>(value * sample_rate);
+        break;
+      case 'S':
+        seg1 = static_cast<int>(value * sample_rate);
+        break;
+      case 'd':
+        data_base = static_cast<int>(value * sample_rate);
+        data_count = total_frames - data_base;
+        break;
+      case 'D':
+        data_count = static_cast<int>(value * sample_rate) - data_base;
+        break;
+      case 'f':
+        fade_count = static_cast<int>(value * sample_rate);
+        break;
+      case 'c':
+        dual_channel = value > 1.5;
+        break;
+      case 'w':
+        swap_stereo = value > 0.5;
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (fade_count < sample_rate / 50) {
+    fade_count = sample_rate / 50;
+  }
+  if (data_count + data_base > total_frames) {
+    data_count = total_frames - data_base;
+  }
+  if (data_count < 0) {
+    if (error_out) {
+      *error_out = "Source data range invalid in SBAGEN_LOOPER settings.";
+    }
+    return false;
+  }
+  if (data_count <= 3 * fade_count) {
+    if (error_out) {
+      *error_out =
+          "Length of source data is too short for the SBAGEN_LOOPER fade length.";
+    }
+    return false;
+  }
+  if (seg0 > data_count) {
+    seg0 = data_count;
+  }
+  if (seg1 > data_count) {
+    seg1 = data_count;
+  }
+  if (seg0 > seg1) {
+    seg0 = seg1;
+  }
+  if (seg0 < 3 * fade_count) {
+    seg0 = 3 * fade_count;
+  }
+  if (seg1 < seg0) {
+    seg1 = seg0;
+  }
+
+  out->source_start_frame = data_base;
+  out->source_frame_count = data_count;
+  out->segment_min_frames = seg0;
+  out->segment_max_frames = seg1;
+  out->fade_frames = fade_count;
+  out->intro_frames = (intro && data_base > 0) ? data_base : 0;
+  out->dual_channel = dual_channel;
+  out->swap_stereo = swap_stereo;
+  return true;
 }
 
 float clamp_unit_float(double value) {
@@ -2271,6 +2466,29 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativePrepareProgramContextStreami
           request,
           jstring_to_utf8(env, mix_source_name),
           mix_looping == JNI_TRUE));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeParseMixLooperSpec(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring looper_spec,
+    jint sample_rate,
+    jint total_frames,
+    jint mix_section) {
+  MixLooperPlanSpec plan;
+  std::string error;
+  const bool ok = parse_mix_looper_plan(jstring_to_utf8(env, looper_spec),
+                                        static_cast<int>(sample_rate),
+                                        static_cast<int>(total_frames),
+                                        static_cast<int>(mix_section),
+                                        &plan,
+                                        &error);
+  return to_jstring(env,
+                    build_mix_looper_plan_json(
+                        ok ? SBX_OK : SBX_EINVAL,
+                        ok ? &plan : nullptr,
+                        error));
 }
 
 extern "C" JNIEXPORT jstring JNICALL

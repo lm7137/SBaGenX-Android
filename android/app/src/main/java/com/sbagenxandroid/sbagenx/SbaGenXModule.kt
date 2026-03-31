@@ -127,9 +127,20 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun prepareSbgContext(text: String, sourceName: String?, promise: Promise) {
+  fun prepareSbgContext(
+      text: String,
+      sourceName: String?,
+      mixPathOverride: String?,
+      mixLooperSpec: String?,
+      promise: Promise,
+  ) {
     resolveNativeCall(promise) {
-      runtimeLoader.prepare(text, sourceName ?: "scratch.sbg")
+      runtimeLoader.prepare(
+          text,
+          sourceName ?: "scratch.sbg",
+          mixPathOverride,
+          mixLooperSpec,
+      )
     }
   }
 
@@ -143,6 +154,7 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
       curveText: String?,
       sourceName: String?,
       mixPath: String?,
+      mixLooperSpec: String?,
       promise: Promise,
   ) {
     resolveNativeCall(promise) {
@@ -156,6 +168,7 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
               curveText = curveText,
               sourceName = sourceName ?: "program:$programKind",
               mixPath = mixPath,
+              mixLooperSpec = mixLooperSpec,
           ),
       )
     }
@@ -183,11 +196,22 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
-  fun startPlayback(text: String, sourceName: String?, promise: Promise) {
+  fun startPlayback(
+      text: String,
+      sourceName: String?,
+      mixPathOverride: String?,
+      mixLooperSpec: String?,
+      promise: Promise,
+  ) {
     Thread(
             {
               resolveNativeCall(promise) {
-                playbackController.startSequence(text, sourceName ?: "scratch.sbg")
+                playbackController.startSequence(
+                    text,
+                    sourceName ?: "scratch.sbg",
+                    mixPathOverride,
+                    mixLooperSpec,
+                )
               }
             },
             "sbagenx-start-playback",
@@ -205,6 +229,7 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
       curveText: String?,
       sourceName: String?,
       mixPath: String?,
+      mixLooperSpec: String?,
       promise: Promise,
   ) {
     Thread(
@@ -220,6 +245,7 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
                         curveText = curveText,
                         sourceName = sourceName ?: "program:$programKind",
                         mixPath = mixPath,
+                        mixLooperSpec = mixLooperSpec,
                     ),
                 )
               }

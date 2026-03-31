@@ -16,7 +16,8 @@ The repo is scaffolded as a plain React Native app and already includes:
 - preview rendering of PCM float samples from JNI without audio output
 - live Android playback for `.sbg` via `AudioTrack`
 - safe `-SE` preamble handling during `.sbg` prepare/playback
-- runtime mix support for `.sbg` `-m` inputs resolved from bundled app assets, file paths, or `content://` URIs
+- runtime mix support for `.sbg` `-m` inputs and program-mode mixes resolved from bundled app assets, file paths, or `content://` URIs
+- `SBAGEN_LOOPER` override state for loaded mixes, with Android keeping mix/looper settings outside the edited `.sbg` text
 - app-local draft save/load inside Android app storage
 
 What is not implemented yet:
@@ -75,11 +76,11 @@ cd android
 - `getBridgeInfo()`
 - `validateSbg(text, sourceName)`
 - `validateSbgf(text, sourceName)`
-- `prepareSbgContext(text, sourceName)`
+- `prepareSbgContext(text, sourceName, mixPathOverride?, mixLooperSpec?)`
 - `getContextState()`
 - `renderPreview(frameCount, sampleValueCount)`
 - `resetContext()`
-- `startPlayback(text, sourceName)`
+- `startPlayback(text, sourceName, mixPathOverride?, mixLooperSpec?)`
 - `stopPlayback()`
 - `getPlaybackState()`
 - `listDocuments()`
@@ -97,6 +98,6 @@ That means desktop-style examples such as `-SE -m river1.ogg` can resolve inside
 
 ## Snapshot provenance
 
-The vendored `sbagenxlib` snapshot comes from the local `SBaGenX` repo on branch `gui-v3.0` at commit `5088272e38b11a762ec6e411a833f948db6f741e`.
+The vendored `sbagenxlib` snapshot now comes from the local `SBaGenX` repo on branch `main` at commit `519b5fc09a13afb45466981574fe5e9b215c4a8d`.
 
 See `native/sbagenxlib/SNAPSHOT.md` and `docs/android-native-bridge.md` for details.

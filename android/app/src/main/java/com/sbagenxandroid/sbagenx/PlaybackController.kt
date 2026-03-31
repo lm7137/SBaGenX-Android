@@ -20,9 +20,14 @@ class PlaybackController(private val runtimeLoader: SbgRuntimeLoader) {
   private var bufferFrames: Int = 0
   private var activeSourceName: String? = null
 
-  fun startSequence(text: String, sourceName: String): String {
+  fun startSequence(
+      text: String,
+      sourceName: String,
+      mixPathOverride: String?,
+      mixLooperSpec: String?,
+  ): String {
     return startPreparedRuntime(sourceName) {
-      runtimeLoader.prepareForPlayback(text, sourceName)
+      runtimeLoader.prepareForPlayback(text, sourceName, mixPathOverride, mixLooperSpec)
     }
   }
 

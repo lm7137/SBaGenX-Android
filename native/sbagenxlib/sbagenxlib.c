@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "sbagenxlib.h"
 #include "sbagenxlib_dsp.h"
 #include "libs/tinyexpr.h"
@@ -310,6 +314,7 @@ struct SbxMixInput {
   int output_rate_is_default;
   int take_stream_ownership;
   int format;
+  char *looper_spec_override;
   int (*read_fn)(int *dst, int dlen);
   void (*term_fn)(void);
   SbxMixWarnCallback warn_cb;
@@ -574,6 +579,15 @@ sbx_mix_input_sync_back(SbxMixInput *input) {
   input->mix_section = sbx_mix_in_cnt;
   input->output_rate_hz = sbx_mix_out_rate;
   input->output_rate_is_default = sbx_mix_out_rate_def ? 1 : 0;
+}
+
+static const char *
+sbx_mix_input_looper_override(void) {
+  SbxMixInput *input = sbx_mix_active_input;
+
+  if (!input || !input->looper_spec_override || !input->looper_spec_override[0])
+    return 0;
+  return input->looper_spec_override;
 }
 
 static int
@@ -1046,6 +1060,10 @@ sbx_dlib_close(SbxDLibHandle lib) {
 
 static char sbx_dlib_exec_dir[PATH_MAX];
 static int sbx_dlib_exec_dir_init;
+#if !defined(_WIN32) && !defined(T_MINGW) && !defined(T_MSVC)
+static char sbx_dlib_module_dir[PATH_MAX];
+static int sbx_dlib_module_dir_init;
+#endif
 
 static void
 sbx_dlib_init_exec_dir(void) {
@@ -1104,12 +1122,45 @@ sbx_dlib_init_exec_dir(void) {
     strcpy(sbx_dlib_exec_dir, ".");
 }
 
+#if !defined(_WIN32) && !defined(T_MINGW) && !defined(T_MSVC)
+static void
+sbx_dlib_init_module_dir(void) {
+  if (sbx_dlib_module_dir_init) return;
+  sbx_dlib_module_dir_init = 1;
+  sbx_dlib_module_dir[0] = 0;
+
+  {
+    Dl_info info;
+    char path[PATH_MAX];
+    if (dladdr((void *)&sbx_dlib_init_module_dir, &info) &&
+        info.dli_fname && info.dli_fname[0]) {
+      char *p1, *p2, *p;
+      strncpy(path, info.dli_fname, sizeof(path) - 1);
+      path[sizeof(path) - 1] = 0;
+      p1 = strrchr(path, '/');
+      p2 = strrchr(path, '\\');
+      p = p1 > p2 ? p1 : p2;
+      if (p) *p = 0;
+      else strcpy(path, ".");
+      strncpy(sbx_dlib_module_dir, path, sizeof(sbx_dlib_module_dir) - 1);
+      sbx_dlib_module_dir[sizeof(sbx_dlib_module_dir) - 1] = 0;
+    }
+  }
+
+  if (!sbx_dlib_module_dir[0])
+    strcpy(sbx_dlib_module_dir, sbx_dlib_exec_dir);
+}
+#endif
+
 static SbxDLibHandle
 sbx_dlib_open_best(const char **names) {
   int i;
   char cand[PATH_MAX * 2];
 
   sbx_dlib_init_exec_dir();
+#if !defined(_WIN32) && !defined(T_MINGW) && !defined(T_MSVC)
+  sbx_dlib_init_module_dir();
+#endif
   for (i = 0; names[i]; i++) {
     const char *name = names[i];
     SbxDLibHandle mod;
@@ -1120,6 +1171,20 @@ sbx_dlib_open_best(const char **names) {
       continue;
     }
 
+#if !defined(_WIN32) && !defined(T_MINGW) && !defined(T_MSVC)
+    if (sbx_dlib_module_dir[0]) {
+      snprintf(cand, sizeof(cand), "%s%c%s%c%s",
+               sbx_dlib_module_dir, SBX_DLIB_PATH_SEP, "libs", SBX_DLIB_PATH_SEP, name);
+      mod = sbx_dlib_open_one(cand);
+      if (mod) return mod;
+
+      snprintf(cand, sizeof(cand), "%s%c%s",
+               sbx_dlib_module_dir, SBX_DLIB_PATH_SEP, name);
+      mod = sbx_dlib_open_one(cand);
+      if (mod) return mod;
+    }
+#endif
+
     snprintf(cand, sizeof(cand), "%s%c%s%c%s",
              sbx_dlib_exec_dir, SBX_DLIB_PATH_SEP, "libs", SBX_DLIB_PATH_SEP, name);
     mod = sbx_dlib_open_one(cand);
@@ -1127,6 +1192,17 @@ sbx_dlib_open_best(const char **names) {
 
     snprintf(cand, sizeof(cand), "%s%c%s",
              sbx_dlib_exec_dir, SBX_DLIB_PATH_SEP, name);
+    mod = sbx_dlib_open_one(cand);
+    if (mod) return mod;
+
+    snprintf(cand, sizeof(cand), "%s%c..%clib%c%s%c%s",
+             sbx_dlib_exec_dir,
+             SBX_DLIB_PATH_SEP,
+             SBX_DLIB_PATH_SEP,
+             SBX_DLIB_PATH_SEP,
+             "sbagenx",
+             SBX_DLIB_PATH_SEP,
+             name);
     mod = sbx_dlib_open_one(cand);
     if (mod) return mod;
 
@@ -3602,8 +3678,10 @@ engine_render_sample(SbxEngine *eng, float *out_l, float *out_r) {
     engine_wave_sample(eng->tone.waveform, eng->phase_l, &spin_mod);
     eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + SBX_TAU * eng->tone.beat_hz / sr, SBX_TAU);
 
-    // Width is interpreted in microseconds (legacy spin semantics).
-    spin = eng->tone.carrier_hz * 1.0e-6 * sr * spin_mod;
+    // Width is interpreted in microseconds. Match the legacy engine's
+    // spin scaling, which normalizes the width against the 8-bit spin table
+    // amplitude before applying the historical 1.5 intensity boost.
+    spin = eng->tone.carrier_hz * 1.0e-6 * sr * spin_mod / 128.0;
     spin = sbx_dsp_clamp(spin * 1.5, -1.0, 1.0);
     spin_pos = fabs(spin);
 
@@ -7377,6 +7455,13 @@ sbx_mix_input_create_stdio(FILE *stream,
   input->warn_cb = cfg.warn_cb;
   input->warn_user = cfg.warn_user;
   input->format = SBX_MIX_INPUT_RAW;
+  if (cfg.looper_spec_override && cfg.looper_spec_override[0]) {
+    input->looper_spec_override = strdup(cfg.looper_spec_override);
+    if (!input->looper_spec_override) {
+      free(input);
+      return 0;
+    }
+  }
 
   if (path_hint && *path_hint) {
     dot = strrchr(path_hint, '.');
@@ -7445,6 +7530,15 @@ sbx_mix_input_create_stdio(FILE *stream,
     sbx_mix_input_activate(input);
   }
 
+  if (input->looper_spec_override && input->looper_spec_override[0] &&
+      input->format != SBX_MIX_INPUT_OGG && input->format != SBX_MIX_INPUT_FLAC &&
+      !input->last_error[0]) {
+    mix_input_set_error(
+      input,
+      "SBAGEN_LOOPER override is currently supported only for OGG and FLAC mix inputs"
+    );
+  }
+
   if (!input->read_fn && !input->last_error[0])
     mix_input_set_error(input, "Unsupported or unavailable mix input format");
 
@@ -7490,6 +7584,10 @@ sbx_mix_input_destroy(SbxMixInput *input) {
   if (input->take_stream_ownership && input->fp)
     fclose(input->fp);
   input->fp = 0;
+  if (input->looper_spec_override) {
+    free(input->looper_spec_override);
+    input->looper_spec_override = 0;
+  }
   if (sbx_mix_active_input == input)
     sbx_mix_active_input = 0;
   free(input);

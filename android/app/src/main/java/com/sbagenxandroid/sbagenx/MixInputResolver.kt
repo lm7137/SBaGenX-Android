@@ -6,6 +6,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -26,8 +27,14 @@ class MixInputResolver(
     private val context: Context,
     private val documentStore: LocalDocumentStore,
 ) {
-  fun resolve(mixPath: String, sourceName: String, targetSampleRate: Int): PreparedMixInput {
+  fun resolve(
+      mixPath: String,
+      sourceName: String,
+      targetSampleRate: Int,
+      mixLooperSpec: String? = null,
+  ): PreparedMixInput {
     val resolvedSource = stageSource(mixPath, sourceName)
+    val explicitLooperSpec = mixLooperSpec?.trim()?.takeIf { it.isNotEmpty() }
 
     try {
       val decoded = decodeToStereoPcm(resolvedSource.file)
@@ -38,10 +45,37 @@ class MixInputResolver(
             resampleStereo(decoded.samples, decoded.sampleRate, targetSampleRate)
           }
 
+      if (explicitLooperSpec != null) {
+        if (resolvedSource.format !in setOf(MixFormat.OGG, MixFormat.FLAC)) {
+          throw IllegalArgumentException(
+              "SBAGEN_LOOPER override is currently supported only for OGG and FLAC mix inputs.",
+          )
+        }
+
+        val effectiveRate = if (targetSampleRate > 0) targetSampleRate else decoded.sampleRate
+        val parsed =
+            org.json.JSONObject(
+                SbagenxBridge.nativeParseMixLooperSpec(
+                    explicitLooperSpec,
+                    effectiveRate,
+                    outputSamples.size / 2,
+                    0,
+                ),
+            )
+        if (parsed.optInt("status", -1) != 0) {
+          throw IllegalArgumentException(
+              parsed.optString("error").ifBlank { "Invalid SBAGEN_LOOPER override." },
+          )
+        }
+      }
+
       return PreparedMixInput(
           sourceName = resolvedSource.displayName,
           samples = outputSamples,
-          looping = resolvedSource.loopingHint || hasSbagenLooperMetadata(resolvedSource.file),
+          looping =
+              explicitLooperSpec != null ||
+                  resolvedSource.loopingHint ||
+                  hasSbagenLooperMetadata(resolvedSource.file),
       )
     } finally {
       resolvedSource.file.delete()
@@ -53,20 +87,23 @@ class MixInputResolver(
     require(normalizedPath.isNotBlank()) { "Mix path cannot be blank." }
 
     if (normalizedPath.startsWith("asset://")) {
-      return copyAssetToTempFile(normalizedPath.removePrefix("asset://"), normalizedPath, true)
+      return copyAssetToTempFile(normalizedPath.removePrefix("asset://"), normalizedPath, false)
     }
 
     if (normalizedPath.startsWith("asset:")) {
-      return copyAssetToTempFile(normalizedPath.removePrefix("asset:"), normalizedPath, true)
+      return copyAssetToTempFile(normalizedPath.removePrefix("asset:"), normalizedPath, false)
     }
 
     if (normalizedPath.startsWith("content://")) {
+      val uri = Uri.parse(normalizedPath)
+      val displayName = queryDisplayName(uri) ?: normalizedPath
       return copyInputStreamToTempFile(
-          displayName = normalizedPath,
+          displayName = displayName,
           loopingHint = false,
-          inputStream = context.contentResolver.openInputStream(Uri.parse(normalizedPath))
+          inputStream = context.contentResolver.openInputStream(uri)
               ?: throw IllegalArgumentException("Unable to open mix content URI."),
           preferredExtension = extensionFor(normalizedPath),
+          format = inferFormat(displayName),
       )
     }
 
@@ -88,6 +125,7 @@ class MixInputResolver(
               context.contentResolver.openInputStream(libraryDocument.uri)
                   ?: throw IllegalArgumentException("Unable to open mix file '${libraryDocument.relativePath}'."),
           preferredExtension = extensionFor(libraryDocument.relativePath),
+          format = inferFormat(libraryDocument.relativePath),
       )
     }
 
@@ -96,7 +134,7 @@ class MixInputResolver(
     }
 
     if (assetExists(normalizedPath)) {
-      return copyAssetToTempFile(normalizedPath, "asset:$normalizedPath", true)
+      return copyAssetToTempFile(normalizedPath, "asset:$normalizedPath", false)
     }
 
     throw IllegalArgumentException(
@@ -145,6 +183,7 @@ class MixInputResolver(
         loopingHint = false,
         inputStream = FileInputStream(file),
         preferredExtension = extensionFor(file.name),
+        format = inferFormat(file.name),
     )
   }
 
@@ -160,6 +199,7 @@ class MixInputResolver(
         loopingHint = loopingHint,
         inputStream = context.assets.open(assetPath),
         preferredExtension = extensionFor(assetPath),
+        format = inferFormat(assetPath),
     )
   }
 
@@ -168,6 +208,7 @@ class MixInputResolver(
       loopingHint: Boolean,
       inputStream: InputStream,
       preferredExtension: String,
+      format: MixFormat,
   ): StagedMixSource {
     val tempFile = File.createTempFile("sbxmix-", preferredExtension, context.cacheDir)
     inputStream.use { source ->
@@ -180,6 +221,7 @@ class MixInputResolver(
         displayName = displayName,
         file = tempFile,
         loopingHint = loopingHint,
+        format = format,
     )
   }
 
@@ -199,6 +241,33 @@ class MixInputResolver(
 
     val raw = path.substring(dot)
     return if (raw.length <= 10) raw else ".bin"
+  }
+
+  private fun inferFormat(pathHint: String): MixFormat {
+    val normalized = pathHint.lowercase()
+    return when {
+      normalized.endsWith(".ogg") -> MixFormat.OGG
+      normalized.endsWith(".flac") -> MixFormat.FLAC
+      normalized.endsWith(".mp3") -> MixFormat.MP3
+      normalized.endsWith(".wav") -> MixFormat.WAV
+      else -> MixFormat.UNKNOWN
+    }
+  }
+
+  private fun queryDisplayName(uri: Uri): String? {
+    return context.contentResolver
+        .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor ->
+          if (!cursor.moveToFirst()) {
+            return@use null
+          }
+          val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (columnIndex >= 0) {
+            cursor.getString(columnIndex)
+          } else {
+            null
+          }
+        }
   }
 
   private fun decodeToStereoPcm(file: File): DecodedStereoPcm {
@@ -473,12 +542,21 @@ class MixInputResolver(
       val displayName: String,
       val file: File,
       val loopingHint: Boolean,
+      val format: MixFormat,
   )
 
   private data class DecodedStereoPcm(
       val sampleRate: Int,
       val samples: ShortArray,
   )
+
+  private enum class MixFormat {
+    OGG,
+    FLAC,
+    MP3,
+    WAV,
+    UNKNOWN,
+  }
 
   companion object {
     private const val CODEC_TIMEOUT_US = 10_000L

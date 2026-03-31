@@ -25,7 +25,7 @@ target_include_directories(
 target_compile_definitions(
   sbagenxbridge
   PRIVATE
-  SBAGENXLIB_VERSION="android-gui-v3.0-5088272"
+  SBAGENXLIB_VERSION="android-main-519b5fc"
 )
 
 find_library(android-lib android)

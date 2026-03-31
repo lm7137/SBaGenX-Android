@@ -55,6 +55,13 @@ object SbagenxBridge {
       mixLooping: Boolean,
   ): String
 
+  external fun nativeParseMixLooperSpec(
+      looperSpec: String,
+      sampleRate: Int,
+      totalFrames: Int,
+      mixSection: Int,
+  ): String
+
   external fun nativeGetContextState(): String
 
   external fun nativeRenderPreview(frameCount: Int, sampleValueCount: Int): String
