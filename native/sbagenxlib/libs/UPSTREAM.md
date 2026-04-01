@@ -21,11 +21,11 @@ Parent repo:
 
 Parent tag:
 
-- `v3.9.0-alpha.5`
+- `v3.9.0-alpha.6`
 
 Parent commit:
 
-- `308f2b827ecba6e690d1881751b1709c1f1f6e9a`
+- `8b54e356feb2ea34d7519a4af8d4927925079f96`
 
 ABIs:
 

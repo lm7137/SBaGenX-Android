@@ -104,8 +104,8 @@ Codec vendoring is documented separately in [android-codecs.md](/home/magiktime/
 ## Snapshot provenance
 
 The vendored `sbagenxlib` sources and Android codec archives in this repo are
-currently pinned to parent `SBaGenX` tag `v3.9.0-alpha.5` at commit
-`308f2b827ecba6e690d1881751b1709c1f1f6e9a`.
+currently pinned to parent `SBaGenX` tag `v3.9.0-alpha.6` at commit
+`8b54e356feb2ea34d7519a4af8d4927925079f96`.
 
 See [SNAPSHOT.md](/home/magiktime/projects/SBaGenX-Android/native/sbagenxlib/SNAPSHOT.md),
 [android-native-bridge.md](/home/magiktime/projects/SBaGenX-Android/docs/android-native-bridge.md),

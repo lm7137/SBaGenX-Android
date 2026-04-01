@@ -6,9 +6,9 @@ parent `SBaGenX` repo at a pinned revision.
 ## Source
 
 - repo: `/home/magiktime/projects/SBaGenX`
-- tag: `v3.9.0-alpha.5`
-- commit: `308f2b827ecba6e690d1881751b1709c1f1f6e9a`
-- short: `308f2b8`
+- tag: `v3.9.0-alpha.6`
+- commit: `8b54e356feb2ea34d7519a4af8d4927925079f96`
+- short: `8b54e35`
 
 ## Files copied for the Android bridge
 
@@ -38,10 +38,12 @@ This snapshot is currently used for:
 - validation and curve inspection
 - `.sbg` / program runtime preparation
 - JNI render/playback
-- latest mix-input config surface from `SBaGenX` `v3.9.0-alpha.5`
+- latest mix-input config surface from `SBaGenX` `v3.9.0-alpha.6`
 - built-in program amplitude defaulting aligned with the Android app's current
   `1/99` program/mix balance rule
 - MP3 `SBAGEN_LOOPER` support via embedded tag metadata or explicit override
+- `customNN` envelope support for compatible mix effects (`mixpulse`,
+  `mixspin`, `mixbeat`)
 
 Codec archive provenance is documented separately in `libs/UPSTREAM.md` and
 `docs/android-codecs.md`.

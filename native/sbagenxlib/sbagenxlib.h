@@ -89,6 +89,7 @@ typedef enum {
 typedef struct {
   int type;      /* SBX_MIXFX_* */
   int waveform;  /* SBX_WAVE_* */
+  int envelope_waveform; /* SBX_ENV_WAVE_NONE or SBX_ENV_WAVE_CUSTOM_BASE + [0..99] */
   double carr;   /* mixspin width in microseconds */
   double res;    /* modulation/spin frequency in Hz */
   double amp;    /* 0..1 effect amount */
@@ -678,6 +679,7 @@ const char *sbx_mix_input_last_error(const SbxMixInput *input);
 int sbx_mix_input_output_rate(const SbxMixInput *input);
 int sbx_mix_input_output_rate_is_default(const SbxMixInput *input);
 int sbx_mix_input_format(const SbxMixInput *input);
+const char *sbx_mix_input_embedded_looper(const SbxMixInput *input);
 
 /*
  * Parse/strip a safe `-SE`-style sequence preamble from in-memory text.

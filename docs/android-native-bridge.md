@@ -19,10 +19,11 @@ The current bridge proves the minimum useful path:
 - Android-side mix-source resolution for `.sbg` `-m` inputs and built-in program mixes
 - native stdio-backed mix inputs through `sbx_mix_input_create_stdio(...)` with bundled Android codec archives for OGG, MP3, and FLAC
 - app/UI-state `SBAGEN_LOOPER` overrides for loaded mixes
+- upstream `customNN` envelope support for `mixpulse`, `mixspin`, and `mixbeat`
 - app-local draft persistence through the React Native module
 
 The current vendored snapshot is pinned to parent `SBaGenX` tag
-`v3.9.0-alpha.5` (`308f2b827ecba6e690d1881751b1709c1f1f6e9a`).
+`v3.9.0-alpha.6` (`8b54e356feb2ea34d7519a4af8d4927925079f96`).
 
 ## Current native surface
 
