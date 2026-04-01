@@ -17,11 +17,15 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
   private val localDocumentStore = LocalDocumentStore(reactContext)
+  private val nativeMixInputResolver = NativeMixInputResolver(reactContext, localDocumentStore)
+  private val decodedMixInputResolver = MixInputResolver(reactContext, localDocumentStore)
+  private val streamingMixInputResolver =
+      StreamingMixInputResolver(reactContext, localDocumentStore)
   private val runtimeLoader =
       SbgRuntimeLoader(
-          NativeMixInputResolver(reactContext, localDocumentStore),
-          MixInputResolver(reactContext, localDocumentStore),
-          StreamingMixInputResolver(reactContext, localDocumentStore),
+          nativeMixInputResolver,
+          decodedMixInputResolver,
+          streamingMixInputResolver,
       )
   private val playbackController = PlaybackController(runtimeLoader)
   private var pendingMixPickerPromise: Promise? = null
@@ -53,12 +57,28 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
               }
 
               takePersistableUriPermission(uri, data)
-              promise.resolve(
-                  buildPickedMixJson(
-                      uri = uri.toString(),
-                      displayName = queryDisplayName(uri).orEmpty(),
-                  ),
-              )
+              val uriText = uri.toString()
+              val displayName = queryDisplayName(uri).orEmpty()
+              Thread(
+                      {
+                        val embeddedLooperSpec =
+                            try {
+                              streamingMixInputResolver.inspectEmbeddedLooper(uriText, "")
+                            } catch (_: Throwable) {
+                              null
+                            }
+
+                        promise.resolve(
+                            buildPickedMixJson(
+                                uri = uriText,
+                                displayName = displayName,
+                                embeddedLooperSpec = embeddedLooperSpec,
+                            ),
+                        )
+                      },
+                      "sbagenx-pick-mix-inspect",
+                  )
+                  .start()
             }
             REQUEST_PICK_LIBRARY -> {
               val promise = pendingLibraryFolderPromise ?: return
@@ -462,10 +482,15 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
     return uri.lastPathSegment?.substringAfterLast('/')
   }
 
-  private fun buildPickedMixJson(uri: String, displayName: String): String {
+  private fun buildPickedMixJson(
+      uri: String,
+      displayName: String,
+      embeddedLooperSpec: String?,
+  ): String {
     return JSONObject()
         .put("uri", uri)
         .put("displayName", displayName)
+        .put("embeddedLooperSpec", embeddedLooperSpec)
         .toString()
   }
 

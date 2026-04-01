@@ -30,6 +30,18 @@ class StreamingMixInputResolver(
     private val context: Context,
     private val documentStore: LocalDocumentStore,
 ) {
+  fun inspectEmbeddedLooper(mixPath: String, sourceName: String): String? {
+    val source = resolveSource(mixPath, sourceName)
+    val embeddedLooper =
+        when (source.format) {
+          MixFormat.MP3 -> extractMp3LooperSpec(source) ?: extractSbagenLooperSpec(source)
+          MixFormat.OGG, MixFormat.FLAC -> extractSbagenLooperSpec(source)
+          else -> null
+        }
+
+    return embeddedLooper?.trim()?.takeIf { it.isNotEmpty() }
+  }
+
   fun open(
       mixPath: String,
       sourceName: String,
@@ -246,6 +258,235 @@ class StreamingMixInputResolver(
     }
 
     return null
+  }
+
+  private fun extractMp3LooperSpec(source: MixStreamSource): String? {
+    source.openMetadataStream(context)?.use { stream ->
+      val header = ByteArray(10)
+      if (!readExactly(stream, header, 0, header.size)) {
+        return null
+      }
+      if (
+          header[0] != 'I'.code.toByte() ||
+              header[1] != 'D'.code.toByte() ||
+              header[2] != '3'.code.toByte()
+      ) {
+        return null
+      }
+
+      val version = header[3].toInt() and 0xff
+      if (version !in 3..4) {
+        return null
+      }
+
+      val tagSize = synchsafe32(header, 6)
+      if (tagSize <= 0 || tagSize > MAX_ID3_TAG_SCAN_BYTES) {
+        return null
+      }
+
+      val tagData = ByteArray(tagSize)
+      if (!readExactly(stream, tagData, 0, tagSize)) {
+        return null
+      }
+
+      var position = 0
+      while (position + 10 <= tagData.size) {
+        if (
+            tagData[position] == 0.toByte() &&
+                tagData[position + 1] == 0.toByte() &&
+                tagData[position + 2] == 0.toByte() &&
+                tagData[position + 3] == 0.toByte()
+        ) {
+          break
+        }
+
+        val frameSize =
+            if (version == 4) {
+              synchsafe32(tagData, position + 4)
+            } else {
+              bigEndian32(tagData, position + 4)
+            }
+        if (frameSize < 0 || position + 10 + frameSize > tagData.size) {
+          break
+        }
+
+        val isTxxx =
+            tagData[position] == 'T'.code.toByte() &&
+                tagData[position + 1] == 'X'.code.toByte() &&
+                tagData[position + 2] == 'X'.code.toByte() &&
+                tagData[position + 3] == 'X'.code.toByte()
+        if (isTxxx) {
+          val looper =
+              parseMp3TxxxValue(
+                  tagData,
+                  position + 10,
+                  frameSize,
+              )
+          if (!looper.isNullOrBlank()) {
+            return looper
+          }
+        }
+
+        position += 10 + frameSize
+      }
+    }
+
+    return null
+  }
+
+  private fun parseMp3TxxxValue(data: ByteArray, offset: Int, length: Int): String? {
+    if (length <= 1 || offset < 0 || offset + length > data.size) {
+      return null
+    }
+
+    val encoding = data[offset].toInt() and 0xff
+    val payloadOffset = offset + 1
+    val payloadLength = length - 1
+
+    val description: String
+    val value: String
+
+    when (encoding) {
+      0, 3 -> {
+        val separator = findByteSeparator(data, payloadOffset, payloadLength)
+        val charset = if (encoding == 3) Charsets.UTF_8 else Charsets.ISO_8859_1
+        description = decodeTrimmed(data, payloadOffset, separator, charset)
+        value =
+            if (separator < payloadLength) {
+              decodeTrimmed(
+                  data,
+                  payloadOffset + separator + 1,
+                  payloadLength - separator - 1,
+                  charset,
+              )
+            } else {
+              ""
+            }
+      }
+      1, 2 -> {
+        val separator = findUtf16Separator(data, payloadOffset, payloadLength)
+        description = decodeUtf16Asciiish(data, payloadOffset, separator)
+        value =
+            if (separator + 1 < payloadLength) {
+              decodeUtf16Asciiish(
+                  data,
+                  payloadOffset + separator + 2,
+                  payloadLength - separator - 2,
+              )
+            } else {
+              ""
+            }
+      }
+      else -> return null
+    }
+
+    return when {
+      description == "SBAGEN_LOOPER" -> value
+      description == "TXXX:SBAGEN_LOOPER" -> value
+      description.isEmpty() && value.startsWith("SBAGEN_LOOPER=") -> value.removePrefix("SBAGEN_LOOPER=")
+      else -> null
+    }?.trim()?.takeIf { it.isNotEmpty() }
+  }
+
+  private fun findByteSeparator(data: ByteArray, offset: Int, length: Int): Int {
+    for (index in 0 until length) {
+      if (data[offset + index] == 0.toByte()) {
+        return index
+      }
+    }
+    return length
+  }
+
+  private fun findUtf16Separator(data: ByteArray, offset: Int, length: Int): Int {
+    var index = 0
+    while (index + 1 < length) {
+      if (data[offset + index] == 0.toByte() && data[offset + index + 1] == 0.toByte()) {
+        return index
+      }
+      index += 2
+    }
+    return length
+  }
+
+  private fun decodeTrimmed(
+      data: ByteArray,
+      offset: Int,
+      length: Int,
+      charset: java.nio.charset.Charset,
+  ): String {
+    if (length <= 0) {
+      return ""
+    }
+
+    return String(data, offset, length, charset).trimEnd('\u0000').trim()
+  }
+
+  private fun decodeUtf16Asciiish(data: ByteArray, offset: Int, length: Int): String {
+    if (length <= 0) {
+      return ""
+    }
+
+    var start = offset
+    var remaining = length
+    if (
+        remaining >= 2 &&
+            ((data[start] == 0xFF.toByte() && data[start + 1] == 0xFE.toByte()) ||
+                (data[start] == 0xFE.toByte() && data[start + 1] == 0xFF.toByte()))
+    ) {
+      start += 2
+      remaining -= 2
+    }
+
+    val builder = StringBuilder(remaining / 2)
+    var index = 0
+    while (index + 1 < remaining) {
+      val first = data[start + index].toInt() and 0xff
+      val second = data[start + index + 1].toInt() and 0xff
+      if (first == 0 && second == 0) {
+        break
+      }
+      builder.append(
+          when {
+            first != 0 && second == 0 -> first.toChar()
+            first == 0 && second != 0 -> second.toChar()
+            else -> '?'
+          },
+      )
+      index += 2
+    }
+
+    return builder.toString().trim()
+  }
+
+  private fun readExactly(
+      stream: InputStream,
+      buffer: ByteArray,
+      offset: Int,
+      length: Int,
+  ): Boolean {
+    var total = 0
+    while (total < length) {
+      val read = stream.read(buffer, offset + total, length - total)
+      if (read <= 0) {
+        return false
+      }
+      total += read
+    }
+    return true
+  }
+
+  private fun synchsafe32(data: ByteArray, offset: Int): Int {
+    return ((data[offset].toInt() and 0x7f) shl 21) or
+        ((data[offset + 1].toInt() and 0x7f) shl 14) or
+        ((data[offset + 2].toInt() and 0x7f) shl 7) or
+        (data[offset + 3].toInt() and 0x7f)
+  }
+
+  private fun bigEndian32(data: ByteArray, offset: Int): Int {
+    return ((data[offset].toInt() and 0xff) shl 24) or
+        ((data[offset + 1].toInt() and 0xff) shl 16) or
+        ((data[offset + 2].toInt() and 0xff) shl 8) or
+        (data[offset + 3].toInt() and 0xff)
   }
 
   private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
@@ -1062,6 +1303,7 @@ class StreamingMixInputResolver(
   companion object {
     private val SBAGEN_LOOPER_MARKER = "SBAGEN_LOOPER=".toByteArray(Charsets.US_ASCII)
     private const val MAX_LOOPER_SCAN_BYTES = 262_144
+    private const val MAX_ID3_TAG_SCAN_BYTES = 1_048_576
     private const val CODEC_TIMEOUT_US = 10_000L
 
     private fun findAudioTrack(extractor: MediaExtractor): Int {

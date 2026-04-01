@@ -108,6 +108,7 @@ export type DocumentStoreInfo = {
 export type PickedMixInput = {
   uri: string;
   displayName: string;
+  embeddedLooperSpec?: string | null;
 };
 
 export type ProgramRuntimeRequest = {

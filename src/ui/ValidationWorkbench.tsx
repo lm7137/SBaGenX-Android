@@ -799,20 +799,28 @@ export function ValidationWorkbench() {
         const replacedExistingMix = Boolean(effectiveSequenceMixPath);
         setSequenceMixPathOverride(picked.uri);
         setSequenceMixDisplayName(picked.displayName || null);
-        setSequenceMixLooperSpec('');
+        setSequenceMixLooperSpec(picked.embeddedLooperSpec?.trim() ?? '');
         setValidationState(
           `${
             replacedExistingMix ? 'Updated' : 'Added'
-          } mix reference for ${picked.displayName || picked.uri}.`,
+          } mix reference for ${picked.displayName || picked.uri}.${
+            picked.embeddedLooperSpec?.trim()
+              ? ' Embedded SBAGEN_LOOPER metadata prepopulated the field.'
+              : ''
+          }`,
         );
       } else {
         setProgramMixPath(picked.uri);
         setProgramMixDisplayName(picked.displayName || null);
-        setProgramMixLooperSpec('');
+        setProgramMixLooperSpec(picked.embeddedLooperSpec?.trim() ?? '');
         setValidationState(
           `Selected mix input ${picked.displayName || picked.uri} for the ${programKindLabel(
             programKind,
-          )} program.`,
+          )} program.${
+            picked.embeddedLooperSpec?.trim()
+              ? ' Embedded SBAGEN_LOOPER metadata prepopulated the field.'
+              : ''
+          }`,
         );
       }
 
@@ -1211,9 +1219,10 @@ export function ValidationWorkbench() {
                     value={programMixLooperSpec}
                   />
                   <Text style={styles.note}>
-                    Leave empty to use embedded{' '}
+                    Embedded{' '}
                     <Text style={styles.inlineCode}>SBAGEN_LOOPER</Text>{' '}
-                    metadata, if present.
+                    metadata prepopulates here when present. Edit it to refine
+                    the loop, or clear the field to use the file tag directly.
                   </Text>
                 </>
               ) : null}
@@ -1320,9 +1329,10 @@ export function ValidationWorkbench() {
                     value={sequenceMixLooperSpec}
                   />
                   <Text style={styles.note}>
-                    Leave empty to use embedded{' '}
+                    Embedded{' '}
                     <Text style={styles.inlineCode}>SBAGEN_LOOPER</Text>{' '}
-                    metadata, if present.
+                    metadata prepopulates here when present. Edit it to refine
+                    the loop, or clear the field to use the file tag directly.
                   </Text>
                 </>
               ) : null}
