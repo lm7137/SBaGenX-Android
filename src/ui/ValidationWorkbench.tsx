@@ -1666,7 +1666,7 @@ export function ValidationWorkbench() {
               style={StyleSheet.absoluteFill}
             />
 
-            <View style={[styles.card, styles.cardSoft, styles.modalCard]}>
+            <View style={[styles.card, styles.cardGlass, styles.modalCard]}>
               <Text style={styles.panelKicker}>Program</Text>
               <Text style={styles.panelTitle}>Choose a built-in program</Text>
               <Text style={styles.panelSub}>
@@ -2099,12 +2099,19 @@ const styles = StyleSheet.create({
   },
   modalScrim: {
     flex: 1,
-    backgroundColor: 'rgba(10, 12, 18, 0.36)',
+    backgroundColor: 'rgba(10, 12, 18, 0.48)',
     justifyContent: 'center',
     paddingHorizontal: 18,
     paddingVertical: 24,
   },
   modalCard: {
+    backgroundColor: 'rgba(238, 238, 232, 0.90)',
+    borderColor: 'rgba(255, 255, 255, 0.20)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.12,
+    shadowRadius: 28,
+    elevation: 10,
     maxHeight: '82%',
     paddingHorizontal: 16,
     paddingVertical: 18,
@@ -2143,8 +2150,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   browserEntryCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.62)',
-    borderColor: 'rgba(0, 0, 0, 0.10)',
+    backgroundColor: 'rgba(232, 232, 226, 0.72)',
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    borderWidth: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
     paddingHorizontal: 14,
     paddingVertical: 12,
     marginBottom: 10,
@@ -2153,8 +2164,8 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   programOptionActive: {
-    backgroundColor: 'rgba(58, 124, 255, 0.12)',
-    borderColor: 'rgba(58, 124, 255, 0.22)',
+    backgroundColor: 'rgba(58, 124, 255, 0.20)',
+    borderColor: 'rgba(58, 124, 255, 0.24)',
   },
   browserEntryHeader: {
     flexDirection: 'row',
