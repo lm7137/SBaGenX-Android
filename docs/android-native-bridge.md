@@ -21,7 +21,8 @@ The current bridge proves the minimum useful path:
 - app/UI-state `SBAGEN_LOOPER` overrides for loaded mixes
 - app-local draft persistence through the React Native module
 
-The current vendored snapshot matches the local `SBaGenX` repo's current `sbagenxlib` files. For upstream reference, prefer the `main` branch there.
+The current vendored snapshot is pinned to parent `SBaGenX` tag
+`v3.9.0-alpha.5` (`308f2b827ecba6e690d1881751b1709c1f1f6e9a`).
 
 ## Current native surface
 

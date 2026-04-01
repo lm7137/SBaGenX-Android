@@ -40,14 +40,14 @@ class StreamingMixInputResolver(
     val format = source.format
     val explicitLooperSpec = mixLooperSpec?.trim()?.takeIf { it.isNotEmpty() }
 
-    if (explicitLooperSpec != null && format !in setOf(MixFormat.OGG, MixFormat.FLAC)) {
+    if (explicitLooperSpec != null && format !in setOf(MixFormat.OGG, MixFormat.FLAC, MixFormat.MP3)) {
       throw IllegalArgumentException(
-          "SBAGEN_LOOPER override is currently supported only for OGG and FLAC mix inputs.",
+          "SBAGEN_LOOPER override is currently supported only for OGG, MP3 and FLAC mix inputs.",
       )
     }
 
     val embeddedLooperSpec =
-        if (explicitLooperSpec == null && format in setOf(MixFormat.OGG, MixFormat.FLAC)) {
+        if (explicitLooperSpec == null && format in setOf(MixFormat.OGG, MixFormat.FLAC, MixFormat.MP3)) {
           extractSbagenLooperSpec(source)
         } else {
           null

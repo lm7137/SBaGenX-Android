@@ -50,23 +50,21 @@ ABIs covered:
 
 ## Current provenance status
 
-The current vendored codec archives were produced during Android bring-up from
-the local parent `SBaGenX` checkout based on commit:
+The current vendored codec archives were rebuilt from the pinned parent
+`SBaGenX` tag:
 
-- `f64431572111c262acb140b7ff42d6c42160ce88`
+- `v3.9.0-alpha.5`
 
-At the time those archives were built, the parent repo also contained local
-uncommitted Android codec/amplitude work. That means the current provenance is
-good enough to explain where the archives came from, but it is still
-transitional.
+Parent commit:
 
-Once the upstream parent repo commits:
+- `308f2b827ecba6e690d1881751b1709c1f1f6e9a`
+
+Build script used:
 
 - `android-build-libs.sh`
-- the built-in program amplitude changes
 
-the codec archives in this repo should be rebuilt from that pinned clean parent
-revision and this note should be refreshed.
+This is now a clean pinned refresh rather than a provisional local-working-tree
+snapshot.
 
 ## Provenance note
 

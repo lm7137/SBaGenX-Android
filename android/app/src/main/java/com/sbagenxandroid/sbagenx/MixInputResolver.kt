@@ -46,9 +46,9 @@ class MixInputResolver(
           }
 
       if (explicitLooperSpec != null) {
-        if (resolvedSource.format !in setOf(MixFormat.OGG, MixFormat.FLAC)) {
+        if (resolvedSource.format !in setOf(MixFormat.OGG, MixFormat.FLAC, MixFormat.MP3)) {
           throw IllegalArgumentException(
-              "SBAGEN_LOOPER override is currently supported only for OGG and FLAC mix inputs.",
+              "SBAGEN_LOOPER override is currently supported only for OGG, MP3 and FLAC mix inputs.",
           )
         }
 

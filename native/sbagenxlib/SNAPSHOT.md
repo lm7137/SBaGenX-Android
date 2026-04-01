@@ -1,16 +1,14 @@
 # Vendored Snapshot
 
 This directory contains a vendored `sbagenxlib` source snapshot copied from the
-local `SBaGenX` repo.
+parent `SBaGenX` repo at a pinned revision.
 
 ## Source
 
 - repo: `/home/magiktime/projects/SBaGenX`
-- branch: `main`
-- base commit: `f64431572111c262acb140b7ff42d6c42160ce88`
-- short: `f644315`
-- note: the latest refresh also included local upstream changes that had not yet
-  been committed in the parent repo at the time of vendoring
+- tag: `v3.9.0-alpha.5`
+- commit: `308f2b827ecba6e690d1881751b1709c1f1f6e9a`
+- short: `308f2b8`
 
 ## Files copied for the Android bridge
 
@@ -40,9 +38,10 @@ This snapshot is currently used for:
 - validation and curve inspection
 - `.sbg` / program runtime preparation
 - JNI render/playback
-- latest mix-input config surface from `SBaGenX/main`
+- latest mix-input config surface from `SBaGenX` `v3.9.0-alpha.5`
 - built-in program amplitude defaulting aligned with the Android app's current
   `1/99` program/mix balance rule
+- MP3 `SBAGEN_LOOPER` support via embedded tag metadata or explicit override
 
 Codec archive provenance is documented separately in `libs/UPSTREAM.md` and
 `docs/android-codecs.md`.

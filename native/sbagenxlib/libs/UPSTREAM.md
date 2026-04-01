@@ -19,9 +19,13 @@ Parent repo:
 
 - `/home/magiktime/projects/SBaGenX`
 
-Parent base commit at build time:
+Parent tag:
 
-- `f64431572111c262acb140b7ff42d6c42160ce88`
+- `v3.9.0-alpha.5`
+
+Parent commit:
+
+- `308f2b827ecba6e690d1881751b1709c1f1f6e9a`
 
 ABIs:
 
@@ -39,9 +43,5 @@ Archives:
 
 ## Status
 
-This snapshot was created during Android bring-up, before the parent repo's
-Android codec script and related amplitude changes were committed upstream.
-
-Treat this provenance as provisional. The next codec refresh should rebuild
-these archives from a pinned clean parent revision after those upstream changes
-land.
+This snapshot was rebuilt from the pinned clean upstream tag above, using that
+revision's `android-build-libs.sh`.
