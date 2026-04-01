@@ -99,8 +99,16 @@ That means desktop-style examples such as `-SE -m river1.ogg` can resolve inside
 
 The parent `SBaGenX` repo now includes [android-build-libs.sh](/home/magiktime/projects/SBaGenX/android-build-libs.sh), which rebuilds the Android `libogg`, Tremor `libvorbisidec`, and `libmad` static archives with the Android NDK and drops them into `SBaGenX/libs/` for vendoring into this repo.
 
+Codec vendoring is documented separately in [android-codecs.md](/home/magiktime/projects/SBaGenX-Android/docs/android-codecs.md). The rule is to build codec archives from a pinned parent `SBaGenX` revision, then vendor snapshot copies into this repo rather than depending on a live sibling checkout.
+
 ## Snapshot provenance
 
-The vendored `sbagenxlib` snapshot now comes from the local `SBaGenX` repo on branch `main` at commit `519b5fc09a13afb45466981574fe5e9b215c4a8d`.
+The vendored `sbagenxlib` sources and Android codec archives in this repo are
+currently based on the local parent `SBaGenX` checkout at commit
+`f64431572111c262acb140b7ff42d6c42160ce88`, with additional upstream-local
+changes present during the latest refresh.
 
-See `native/sbagenxlib/SNAPSHOT.md` and `docs/android-native-bridge.md` for details.
+See [SNAPSHOT.md](/home/magiktime/projects/SBaGenX-Android/native/sbagenxlib/SNAPSHOT.md),
+[android-native-bridge.md](/home/magiktime/projects/SBaGenX-Android/docs/android-native-bridge.md),
+and [android-codecs.md](/home/magiktime/projects/SBaGenX-Android/docs/android-codecs.md)
+for details.

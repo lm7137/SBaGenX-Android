@@ -1,13 +1,16 @@
 # Vendored Snapshot
 
-This directory contains a pinned `sbagenxlib` source snapshot copied from the local `SBaGenX` repo.
+This directory contains a vendored `sbagenxlib` source snapshot copied from the
+local `SBaGenX` repo.
 
 ## Source
 
 - repo: `/home/magiktime/projects/SBaGenX`
 - branch: `main`
-- commit: `519b5fc09a13afb45466981574fe5e9b215c4a8d`
-- short: `519b5fc`
+- base commit: `f64431572111c262acb140b7ff42d6c42160ce88`
+- short: `f644315`
+- note: the latest refresh also included local upstream changes that had not yet
+  been committed in the parent repo at the time of vendoring
 
 ## Files copied for the Android bridge
 
@@ -38,6 +41,8 @@ This snapshot is currently used for:
 - `.sbg` / program runtime preparation
 - JNI render/playback
 - latest mix-input config surface from `SBaGenX/main`
+- built-in program amplitude defaulting aligned with the Android app's current
+  `1/99` program/mix balance rule
 
-Android still uses the platform media stack for actual mix decoding, but the
-vendored engine snapshot now matches the looper-override handoff baseline.
+Codec archive provenance is documented separately in `libs/UPSTREAM.md` and
+`docs/android-codecs.md`.

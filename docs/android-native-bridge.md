@@ -65,6 +65,8 @@ Current mix-input rules:
 - mix section suffixes like `#1` are now passed through to `sbx_mix_input_create_stdio(...)`
 - FLAC native decode is bundled into the Android build now
 - OGG and MP3 native decode are bundled into the Android build now through Android NDK builds of `libogg`, Tremor `libvorbisidec`, and `libmad`
+- those codec archives are vendored snapshots in `native/sbagenxlib/libs/`, not a live dependency on the parent repo
+- refreshes of the vendored codec archives should follow the protocol in `docs/android-codecs.md`
 
 ## Build path
 
@@ -79,6 +81,10 @@ The Android app currently builds native code for:
 - `x86_64`
 
 The parent `SBaGenX` repo provides `android-build-libs.sh` to rebuild those codec archives from upstream source tarballs with the Android NDK.
+
+The Android repo then vendors snapshot copies of those archives into
+`native/sbagenxlib/libs/`. See `docs/android-codecs.md` and
+`native/sbagenxlib/libs/UPSTREAM.md` for provenance and refresh rules.
 
 ## Why validation first
 
