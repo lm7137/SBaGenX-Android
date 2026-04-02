@@ -65,7 +65,7 @@ target_include_directories(
 target_compile_definitions(
   sbagenxbridge
   PRIVATE
-  SBAGENXLIB_VERSION="android-v3.9.0-alpha.6-8b54e35"
+  SBAGENXLIB_VERSION="android-v3.9.0-alpha.7-b1e2ee9"
   OGG_DECODE
   MP3_DECODE
   FLAC_DECODE

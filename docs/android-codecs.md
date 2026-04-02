@@ -53,11 +53,11 @@ ABIs covered:
 The current vendored codec archives were rebuilt from the pinned parent
 `SBaGenX` tag:
 
-- `v3.9.0-alpha.6`
+- `v3.9.0-alpha.7`
 
 Parent commit:
 
-- `8b54e356feb2ea34d7519a4af8d4927925079f96`
+- `b1e2ee998c76bb7882100ebf197d29db6d66a54f`
 
 Build script used:
 
