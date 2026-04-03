@@ -2483,9 +2483,12 @@ bool diagnostics_have_errors(const SbxDiagnostic *diags, size_t count) {
   return false;
 }
 
-bool inspect_curve_info(const std::string &text,
-                        const std::string &source_name,
-                        CurveInspection *out) {
+bool inspect_curve_info(
+    const std::string &text,
+    const std::string &source_name,
+    const std::vector<CurveParameterOverride> *overrides,
+    CurveInspection *out,
+    std::string *error_out) {
   if (!out) {
     return false;
   }
@@ -2504,14 +2507,38 @@ bool inspect_curve_info(const std::string &text,
 
   if (sbx_curve_load_text(curve.get(), text.c_str(), source_name.c_str()) !=
       SBX_OK) {
+    if (error_out) {
+      *error_out = "Failed to load curve text for inspection.";
+    }
     return false;
   }
 
+  if (overrides) {
+    for (const CurveParameterOverride &override_value : *overrides) {
+      if (sbx_curve_set_param(curve.get(),
+                              override_value.name.c_str(),
+                              override_value.value) != SBX_OK) {
+        if (error_out) {
+          *error_out =
+              std::string("Invalid curve parameter override: ") +
+              override_value.name + '.';
+        }
+        return false;
+      }
+    }
+  }
+
   if (sbx_curve_prepare(curve.get(), &cfg) != SBX_OK) {
+    if (error_out) {
+      *error_out = "Curve preparation failed after applying program overrides.";
+    }
     return false;
   }
 
   if (sbx_curve_get_info(curve.get(), &out->info) != SBX_OK) {
+    if (error_out) {
+      *error_out = "Failed to inspect prepared curve metadata.";
+    }
     return false;
   }
 
@@ -2537,12 +2564,17 @@ std::string build_validation_json(int status,
                                   const SbxDiagnostic *diags,
                                   size_t count,
                                   const CurveInspection *curve_inspection =
-                                      nullptr) {
+                                      nullptr,
+                                  const char *status_text_override = nullptr) {
   std::ostringstream json;
+  const char *resolved_status_text =
+      (status_text_override && *status_text_override)
+          ? status_text_override
+          : status_text(status);
 
   json << '{'
        << "\"status\":" << status << ','
-       << "\"statusText\":\"" << escape_json(status_text(status)) << "\","
+       << "\"statusText\":\"" << escape_json(resolved_status_text) << "\","
        << "\"diagnosticCount\":" << count << ','
        << "\"diagnostics\":";
 
@@ -2580,12 +2612,64 @@ std::string validate_text(const std::string &text,
                                                   &count);
 
   if (!is_sbg && status == SBX_OK && !diagnostics_have_errors(diags, count) &&
-      inspect_curve_info(text, safe_source, &curve_inspection)) {
+      inspect_curve_info(text,
+                         safe_source,
+                         nullptr,
+                         &curve_inspection,
+                         nullptr)) {
     curve_info_json = &curve_inspection;
   }
 
   const std::string json =
       build_validation_json(status, diags, count, curve_info_json);
+  if (diags) {
+    sbx_free_diagnostics(diags);
+  }
+
+  return json;
+}
+
+std::string validate_curve_program_text(const std::string &text,
+                                        const std::string &main_arg,
+                                        const std::string &source_name) {
+  SbxDiagnostic *diags = nullptr;
+  size_t count = 0U;
+  CurveInspection curve_inspection;
+  const CurveInspection *curve_info_json = nullptr;
+  std::string custom_status_text;
+  const std::string safe_source =
+      source_name.empty() ? "scratch.sbgf" : source_name;
+
+  int status = sbx_validate_sbgf_text(
+      text.c_str(), safe_source.c_str(), &diags, &count);
+
+  if (status == SBX_OK && !diagnostics_have_errors(diags, count)) {
+    DropLikeMainArg parsed;
+    if (!parse_drop_like_main_arg(
+            main_arg, ProgramKind::kCurve, &parsed, &custom_status_text)) {
+      status = SBX_EINVAL;
+    } else if (inspect_curve_info(text,
+                                  safe_source,
+                                  &parsed.curve_overrides,
+                                  &curve_inspection,
+                                  &custom_status_text)) {
+      curve_info_json = &curve_inspection;
+    } else {
+      status = SBX_EINVAL;
+      if (custom_status_text.empty()) {
+        custom_status_text = "Failed to inspect curve program metadata.";
+      }
+    }
+  }
+
+  const std::string json =
+      build_validation_json(status,
+                            diags,
+                            count,
+                            curve_info_json,
+                            custom_status_text.empty()
+                                ? nullptr
+                                : custom_status_text.c_str());
   if (diags) {
     sbx_free_diagnostics(diags);
   }
@@ -2682,6 +2766,19 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeValidateSbgf(
                     validate_text(jstring_to_utf8(env, text),
                                   jstring_to_utf8(env, source_name),
                                   false));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeValidateCurveProgram(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring text,
+    jstring main_arg,
+    jstring source_name) {
+  return to_jstring(env,
+                    validate_curve_program_text(jstring_to_utf8(env, text),
+                                                jstring_to_utf8(env, main_arg),
+                                                jstring_to_utf8(env, source_name)));
 }
 
 extern "C" JNIEXPORT jstring JNICALL

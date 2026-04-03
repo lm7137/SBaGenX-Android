@@ -1,4 +1,11 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Image,
   Modal,
@@ -31,12 +38,13 @@ import {
   startProgramPlayback,
   startPlayback,
   stopPlayback,
-    type BridgeInfo,
-    type ContextState,
-    type CurveInfo,
-    type DocumentStoreInfo,
-    type DocumentKind,
-    type PlaybackState,
+  validateCurveProgramDocument,
+  type BridgeInfo,
+  type ContextState,
+  type CurveInfo,
+  type DocumentStoreInfo,
+  type DocumentKind,
+  type PlaybackState,
   type ProgramKind,
   type ProgramRuntimeRequest,
   type RenderPreviewResult,
@@ -504,16 +512,23 @@ export function ValidationWorkbench() {
     }
   }
 
-  async function runValidationFor(
+  const runValidationFor = useEffectEvent(async (
     kind: DocumentKind,
     nextText: string,
     nextResolvedName: string,
-  ) {
+  ) => {
     const requestId = validationRequestIdRef.current + 1;
     validationRequestIdRef.current = requestId;
 
     try {
-      const result = await validateDocument(kind, nextText, nextResolvedName);
+      const result =
+        runtimeMode === 'program' && programKind === 'curve'
+          ? await validateCurveProgramDocument(
+              nextText,
+              currentProgramMainArg,
+              nextResolvedName,
+            )
+          : await validateDocument(kind, nextText, nextResolvedName);
 
       if (requestId !== validationRequestIdRef.current) {
         return;
@@ -553,7 +568,7 @@ export function ValidationWorkbench() {
         return;
       }
     }
-  }
+  });
 
   function buildProgramRequest(): ProgramRuntimeRequest {
     return {
@@ -880,7 +895,10 @@ export function ValidationWorkbench() {
     activeResolvedName,
     activeSourceName,
     activeText,
+    currentProgramMainArg,
     nativeAvailability,
+    programKind,
+    runtimeMode,
   ]);
 
   return (
@@ -1512,13 +1530,7 @@ export function ValidationWorkbench() {
 
             {runtimeMode === 'program' && programKind === 'curve' ? (
               curveInfo ? (
-                <View
-                  style={[
-                    styles.card,
-                    styles.innerGlassCard,
-                    styles.curveInfoCard,
-                  ]}
-                >
+                <GlassCard style={[styles.innerGlassCard, styles.curveInfoCard]}>
                   <Text style={styles.innerCardTitle}>Curve Info</Text>
                   <Text style={styles.innerCardMeta}>
                     Prepared directly by{' '}
@@ -1577,7 +1589,7 @@ export function ValidationWorkbench() {
                       No explicit parameters declared in this curve.
                     </Text>
                   )}
-                </View>
+                </GlassCard>
               ) : (
                 <Text style={styles.emptyState}>
                   Curve metadata appears here once the active{' '}
@@ -2316,10 +2328,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   curveInfoStat: {
-    backgroundColor: 'rgba(255, 255, 255, 0.58)',
-    borderColor: 'rgba(0, 0, 0, 0.08)',
+    backgroundColor: SURFACE_GLASS,
+    borderColor: SURFACE_BORDER_LIGHT,
     borderRadius: 14,
-    borderWidth: 1,
+    borderWidth: 0,
     minWidth: 108,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -2338,14 +2350,15 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   curveParamList: {
-    borderColor: 'rgba(0, 0, 0, 0.08)',
+    backgroundColor: SURFACE_GLASS,
+    borderColor: SURFACE_BORDER_LIGHT,
     borderRadius: 16,
-    borderWidth: 1,
+    borderWidth: 0,
     overflow: 'hidden',
   },
   curveParamRow: {
-    backgroundColor: 'rgba(255, 255, 255, 0.5)',
-    borderBottomColor: 'rgba(0, 0, 0, 0.08)',
+    backgroundColor: 'transparent',
+    borderBottomColor: 'rgba(255, 255, 255, 0.12)',
     borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     justifyContent: 'space-between',

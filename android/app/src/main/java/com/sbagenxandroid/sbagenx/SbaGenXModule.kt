@@ -148,6 +148,22 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun validateCurveProgram(
+      text: String,
+      mainArg: String,
+      sourceName: String?,
+      promise: Promise,
+  ) {
+    resolveNativeCall(promise) {
+      SbagenxBridge.nativeValidateCurveProgram(
+          text,
+          mainArg,
+          sourceName ?: "scratch.sbgf",
+      )
+    }
+  }
+
+  @ReactMethod
   fun prepareSbgContext(
       text: String,
       sourceName: String?,

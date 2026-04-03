@@ -11,6 +11,12 @@ object SbagenxBridge {
 
   external fun nativeValidateSbgf(text: String, sourceName: String): String
 
+  external fun nativeValidateCurveProgram(
+      text: String,
+      mainArg: String,
+      sourceName: String,
+  ): String
+
   external fun nativeInspectSbgRuntimeConfig(text: String, sourceName: String): String
 
   external fun nativePrepareSbgContext(

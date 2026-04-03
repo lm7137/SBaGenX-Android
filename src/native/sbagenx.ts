@@ -127,6 +127,11 @@ type NativeSbaGenXModule = {
   getBridgeInfo(): Promise<string>;
   validateSbg(text: string, sourceName?: string): Promise<string>;
   validateSbgf(text: string, sourceName?: string): Promise<string>;
+  validateCurveProgram(
+    text: string,
+    mainArg: string,
+    sourceName?: string,
+  ): Promise<string>;
   prepareSbgContext(
     text: string,
     sourceName?: string,
@@ -224,6 +229,20 @@ export async function validateDocument(
     kind === 'sbg'
       ? module.validateSbg(text, sourceName ?? fallbackSource)
       : module.validateSbgf(text, sourceName ?? fallbackSource),
+  );
+}
+
+export async function validateCurveProgramDocument(
+  text: string,
+  mainArg: string,
+  sourceName?: string,
+): Promise<ValidationResult> {
+  return parseNativeJson<ValidationResult>(
+    requireNativeModule().validateCurveProgram(
+      text,
+      mainArg,
+      sourceName ?? 'scratch.sbgf',
+    ),
   );
 }
 
