@@ -11,5 +11,8 @@ class SbaGenXPackage : ReactPackage {
 
   override fun createViewManagers(
       reactContext: ReactApplicationContext,
-  ): List<ViewManager<*, *>> = listOf(SbaGenXEditorViewManager())
+  ): List<ViewManager<*, *>> = listOf(
+      SbaGenXEditorViewManager(),
+      SbaGenXBeatPreviewViewManager(),
+  )
 }

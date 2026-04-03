@@ -31,6 +31,34 @@ export type CurveInfo = {
   parameters: CurveParameter[];
 };
 
+export type BeatPreviewPoint = {
+  tSec: number;
+  beatHz: number | null;
+};
+
+export type BeatPreviewSeries = {
+  voiceIndex: number;
+  label: string;
+  activeSampleCount: number;
+  points: BeatPreviewPoint[];
+};
+
+export type BeatPreviewResult = {
+  status: number;
+  statusText: string;
+  durationSec: number;
+  sampleCount: number;
+  voiceCount: number;
+  minHz: number | null;
+  maxHz: number | null;
+  limited: boolean;
+  timeLabel: string;
+  series: BeatPreviewSeries[];
+  error: string;
+  bridgeVersion: string;
+  engineVersion: string;
+};
+
 export type BridgeInfo = {
   bridgeVersion: string;
   libraryVersion: string;
@@ -131,6 +159,17 @@ type NativeSbaGenXModule = {
     text: string,
     mainArg: string,
     sourceName?: string,
+  ): Promise<string>;
+  sampleBeatPreview(text: string, sourceName?: string): Promise<string>;
+  sampleProgramBeatPreview(
+    programKind: ProgramKind,
+    mainArg: string,
+    dropTimeSec: number,
+    holdTimeSec: number,
+    wakeTimeSec: number,
+    curveText?: string | null,
+    sourceName?: string,
+    mixPath?: string | null,
   ): Promise<string>;
   prepareSbgContext(
     text: string,
@@ -262,6 +301,18 @@ export async function prepareSbgContext(
   );
 }
 
+export async function sampleBeatPreview(
+  text: string,
+  sourceName?: string,
+): Promise<BeatPreviewResult> {
+  return parseNativeJson<BeatPreviewResult>(
+    requireNativeModule().sampleBeatPreview(
+      text,
+      sourceName ?? 'scratch.sbg',
+    ),
+  );
+}
+
 export async function getContextState(): Promise<ContextState> {
   return parseNativeJson<ContextState>(requireNativeModule().getContextState());
 }
@@ -290,6 +341,23 @@ export async function renderPreview(
 ): Promise<RenderPreviewResult> {
   return parseNativeJson<RenderPreviewResult>(
     requireNativeModule().renderPreview(frameCount, sampleValueCount),
+  );
+}
+
+export async function sampleProgramBeatPreview(
+  request: ProgramRuntimeRequest,
+): Promise<BeatPreviewResult> {
+  return parseNativeJson<BeatPreviewResult>(
+    requireNativeModule().sampleProgramBeatPreview(
+      request.programKind,
+      request.mainArg,
+      request.dropTimeSec,
+      request.holdTimeSec,
+      request.wakeTimeSec,
+      request.curveText ?? null,
+      request.sourceName ?? `program:${request.programKind}`,
+      request.mixPath ?? null,
+    ),
   );
 }
 

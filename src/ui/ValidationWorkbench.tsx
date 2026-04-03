@@ -22,6 +22,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ensureDocumentName,
   getBridgeInfo,
+  sampleBeatPreview,
+  sampleProgramBeatPreview,
   getContextState,
   getDocumentStoreInfo,
   getPlaybackState,
@@ -39,6 +41,7 @@ import {
   startPlayback,
   stopPlayback,
   validateCurveProgramDocument,
+  type BeatPreviewResult,
   type BridgeInfo,
   type ContextState,
   type CurveInfo,
@@ -51,12 +54,14 @@ import {
   type SbaGenXDiagnostic,
   validateDocument,
 } from '../native/sbagenx';
+import { SbaGenXBeatPreview } from './SbaGenXBeatPreview';
 import { SbaGenXEditor } from './SbaGenXEditor';
 import { WebsiteBackdrop } from './WebsiteBackdrop';
 
 const brandIcon = require('../assets/sbagenx-icon.png');
 const heroBlueOrb = require('../assets/hero-blue-orb.png');
 const heroPinkOrb = require('../assets/hero-pink-orb.png');
+const BEAT_PREVIEW_COLORS = ['#3a7cff', '#ff2ea6', '#00a47a', '#7b61ff'];
 
 const SURFACE_SOFT = 'rgba(235, 235, 229, 0.74)';
 const SURFACE_GLASS = 'rgba(232, 232, 226, 0.65)';
@@ -141,6 +146,26 @@ function formatSeconds(value: number): string {
 
 function formatCurveValue(value: number): string {
   return Math.abs(value) >= 10 ? value.toFixed(3) : value.toFixed(4);
+}
+
+function formatBeatHz(value: number | null): string {
+  if (value == null) {
+    return '—';
+  }
+  return value >= 10 ? `${value.toFixed(1)} Hz` : `${value.toFixed(2)} Hz`;
+}
+
+function formatBeatPreviewDuration(seconds: number, limited: boolean): string {
+  let text = '';
+  if (seconds >= 60) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    text = `${mins}m ${secs}s`;
+  } else {
+    text = `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+  }
+
+  return limited ? `${text} cap` : text;
 }
 
 function isPreambleCommentOrBlank(line: string): boolean {
@@ -343,6 +368,8 @@ export function ValidationWorkbench() {
   );
   const [diagnostics, setDiagnostics] = useState<SbaGenXDiagnostic[]>([]);
   const [curveInfo, setCurveInfo] = useState<CurveInfo | null>(null);
+  const [beatPreview, setBeatPreview] = useState<BeatPreviewResult | null>(null);
+  const [beatPreviewError, setBeatPreviewError] = useState<string | null>(null);
   const [contextState, setContextState] = useState<ContextState | null>(null);
   const [previewState, setPreviewState] = useState<RenderPreviewResult | null>(
     null,
@@ -353,6 +380,7 @@ export function ValidationWorkbench() {
   const [documentStoreInfo, setDocumentStoreInfo] =
     useState<DocumentStoreInfo | null>(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [isBeatPreviewLoading, setIsBeatPreviewLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isPlayingAction, setIsPlayingAction] = useState(false);
   const [sequenceMixDisplayName, setSequenceMixDisplayName] = useState<string | null>(
@@ -369,6 +397,7 @@ export function ValidationWorkbench() {
   const [isProgramPickerVisible, setIsProgramPickerVisible] = useState(false);
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
+  const beatPreviewRequestIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -566,6 +595,56 @@ export function ValidationWorkbench() {
     } finally {
       if (requestId !== validationRequestIdRef.current) {
         return;
+      }
+    }
+  });
+
+  const runBeatPreviewForCurrentState = useEffectEvent(async () => {
+    const requestId = beatPreviewRequestIdRef.current + 1;
+    beatPreviewRequestIdRef.current = requestId;
+    setIsBeatPreviewLoading(true);
+    setBeatPreviewError(null);
+
+    try {
+      const result =
+        runtimeMode === 'sequence'
+          ? await sampleBeatPreview(sequenceText, activeSourceName)
+          : await sampleProgramBeatPreview({
+              programKind,
+              mainArg: currentProgramMainArg,
+              dropTimeSec: parseMinutesField(programDropMinutes, 30),
+              holdTimeSec: parseMinutesField(programHoldMinutes, 30),
+              wakeTimeSec: parseMinutesField(programWakeMinutes, 3),
+              curveText: programKind === 'curve' ? curveText : null,
+              sourceName:
+                programKind === 'curve'
+                  ? curveSourceName ?? curveResolvedName
+                  : `program:${programKind}`,
+            });
+
+      if (requestId !== beatPreviewRequestIdRef.current) {
+        return;
+      }
+
+      if (result.status !== 0) {
+        setBeatPreview(null);
+        setBeatPreviewError(result.error || result.statusText);
+      } else {
+        setBeatPreview(result);
+        setBeatPreviewError(null);
+      }
+    } catch (error) {
+      if (requestId !== beatPreviewRequestIdRef.current) {
+        return;
+      }
+
+      setBeatPreview(null);
+      setBeatPreviewError(
+        error instanceof Error ? error.message : 'Failed to sample beat preview.',
+      );
+    } finally {
+      if (requestId === beatPreviewRequestIdRef.current) {
+        setIsBeatPreviewLoading(false);
       }
     }
   });
@@ -899,6 +978,33 @@ export function ValidationWorkbench() {
     nativeAvailability,
     programKind,
     runtimeMode,
+  ]);
+
+  useEffect(() => {
+    if (!nativeAvailability) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      runBeatPreviewForCurrentState().catch(() => {});
+    }, 240);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [
+    currentProgramMainArg,
+    curveResolvedName,
+    curveSourceName,
+    curveText,
+    nativeAvailability,
+    programDropMinutes,
+    programHoldMinutes,
+    programKind,
+    programWakeMinutes,
+    runtimeMode,
+    sequenceText,
+    activeSourceName,
   ]);
 
   return (
@@ -1509,6 +1615,102 @@ export function ValidationWorkbench() {
                 )}
               </View>
             ) : null}
+          </GlassCard>
+
+          <GlassCard style={styles.panel}>
+            <Text style={styles.panelKicker}>Inspector</Text>
+            <Text style={styles.panelTitle}>Beat Preview</Text>
+            <Text style={styles.panelSub}>
+              {runtimeMode === 'sequence'
+                ? 'Sampled directly from sbagenxlib over the active sequence duration.'
+                : programKind === 'curve'
+                ? 'Sampled directly from sbagenxlib for the active built-in curve program.'
+                : 'Sampled directly from sbagenxlib over the active built-in program preview window.'}
+            </Text>
+
+            {isBeatPreviewLoading ? (
+              <Text style={styles.emptyState}>Sampling beat preview...</Text>
+            ) : beatPreviewError ? (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorTitle}>Preview Error</Text>
+                <Text style={styles.errorBody}>{beatPreviewError}</Text>
+              </View>
+            ) : beatPreview && beatPreview.series.length === 0 ? (
+              <Text style={styles.emptyState}>
+                No beat-bearing voices are active in the current target, so
+                there is nothing meaningful to plot here.
+              </Text>
+            ) : beatPreview ? (
+              <>
+                <View style={styles.beatPreviewStats}>
+                  <View style={styles.curveInfoStat}>
+                    <Text style={styles.curveInfoStatLabel}>Min</Text>
+                    <Text style={styles.curveInfoStatValue}>
+                      {formatBeatHz(beatPreview.minHz)}
+                    </Text>
+                  </View>
+                  <View style={styles.curveInfoStat}>
+                    <Text style={styles.curveInfoStatLabel}>Max</Text>
+                    <Text style={styles.curveInfoStatValue}>
+                      {formatBeatHz(beatPreview.maxHz)}
+                    </Text>
+                  </View>
+                  <View style={styles.curveInfoStat}>
+                    <Text style={styles.curveInfoStatLabel}>Voices</Text>
+                    <Text style={styles.curveInfoStatValue}>
+                      {beatPreview.voiceCount}
+                    </Text>
+                  </View>
+                  <View style={styles.curveInfoStat}>
+                    <Text style={styles.curveInfoStatLabel}>Span</Text>
+                    <Text style={styles.curveInfoStatValue}>
+                      {formatBeatPreviewDuration(
+                        beatPreview.durationSec,
+                        beatPreview.limited,
+                      )}
+                    </Text>
+                  </View>
+                </View>
+
+                <GlassCard style={styles.beatPreviewChartCard}>
+                  <SbaGenXBeatPreview
+                    preview={beatPreview}
+                    style={styles.beatPreviewChart}
+                  />
+                </GlassCard>
+
+                {beatPreview.series.length > 1 ? (
+                  <View style={styles.beatPreviewLegend}>
+                    {beatPreview.series.map((series, index) => (
+                      <View
+                        key={`${series.voiceIndex}-${series.label}`}
+                        style={styles.beatPreviewLegendItem}
+                      >
+                        <View
+                          style={[
+                            styles.beatPreviewLegendSwatch,
+                            {
+                              backgroundColor:
+                                BEAT_PREVIEW_COLORS[
+                                  index % BEAT_PREVIEW_COLORS.length
+                                ],
+                            },
+                          ]}
+                        />
+                        <Text style={styles.beatPreviewLegendText}>
+                          {series.label}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </>
+            ) : (
+              <Text style={styles.emptyState}>
+                Beat preview appears here once the active runtime validates
+                cleanly.
+              </Text>
+            )}
           </GlassCard>
 
           <GlassCard style={styles.panel}>
@@ -2326,6 +2528,42 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 10,
     marginBottom: 12,
+  },
+  beatPreviewStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 12,
+  },
+  beatPreviewChartCard: {
+    marginBottom: 12,
+    overflow: 'hidden',
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  beatPreviewChart: {
+    width: '100%',
+    height: 208,
+  },
+  beatPreviewLegend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  beatPreviewLegendItem: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  beatPreviewLegendSwatch: {
+    borderRadius: 999,
+    height: 10,
+    width: 10,
+  },
+  beatPreviewLegendText: {
+    color: 'rgba(20, 20, 20, 0.78)',
+    fontSize: 12,
+    fontWeight: '700',
   },
   curveInfoStat: {
     backgroundColor: SURFACE_GLASS,

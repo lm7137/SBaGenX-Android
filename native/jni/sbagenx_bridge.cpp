@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@ constexpr int kDefaultProgramHoldSec = 1800;
 constexpr int kDefaultProgramWakeSec = 180;
 constexpr int kDefaultProgramStepLenSec = 180;
 constexpr int kShortProgramStepLenSec = 60;
+constexpr double kBeatPreviewLimitSec = 120.0;
+constexpr size_t kBeatPreviewSampleCount = 240U;
 
 struct CurveParameterSnapshot {
   std::string name;
@@ -194,6 +197,20 @@ void append_float_array_json(std::ostringstream &json,
     json << values[index];
   }
   json << ']';
+}
+
+bool tone_mode_has_beat_preview(int mode) {
+  switch (mode) {
+    case SBX_TONE_BINAURAL:
+    case SBX_TONE_MONAURAL:
+    case SBX_TONE_ISOCHRONIC:
+    case SBX_TONE_SPIN_PINK:
+    case SBX_TONE_SPIN_BROWN:
+    case SBX_TONE_SPIN_WHITE:
+      return true;
+    default:
+      return false;
+  }
 }
 
 std::string build_mix_looper_plan_json(int status,
@@ -1260,6 +1277,13 @@ class BridgeRuntimeState {
                                      "");
   }
 
+  std::string sample_beat_preview_json() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const int status =
+        context_ ? SBX_OK : (last_status_ == SBX_OK ? SBX_ENOTREADY : last_status_);
+    return build_beat_preview_json_locked(status, "");
+  }
+
   int render_into_buffer(float *out, size_t frames, size_t sample_capacity) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!context_) {
@@ -2223,9 +2247,11 @@ class BridgeRuntimeState {
   }
 
   std::string build_context_state_json_locked(
-      int status, const std::string &override_error) const {
+      int status, const std::string &override_error) {
     const std::string error =
         !override_error.empty() ? override_error : context_error_locked();
+    last_status_ = status;
+    last_error_text_ = error;
 
     std::ostringstream json;
     json << '{'
@@ -2258,9 +2284,11 @@ class BridgeRuntimeState {
                                         double rms,
                                         const float *samples,
                                         size_t sample_count,
-                                        const std::string &override_error) const {
+                                        const std::string &override_error) {
     const std::string error =
         !override_error.empty() ? override_error : context_error_locked();
+    last_status_ = status;
+    last_error_text_ = error;
 
     std::ostringstream json;
     json << '{'
@@ -2298,6 +2326,172 @@ class BridgeRuntimeState {
     return json.str();
   }
 
+  std::string build_beat_preview_json_locked(
+      int status, const std::string &override_error) {
+    std::string error =
+        !override_error.empty()
+            ? override_error
+            : (!last_error_text_.empty() ? last_error_text_ : context_error_locked());
+    double duration_sec = 0.0;
+    size_t sample_count = 0U;
+    size_t plotted_voice_count = 0U;
+    double min_hz = std::numeric_limits<double>::infinity();
+    double max_hz = -std::numeric_limits<double>::infinity();
+    bool limited = false;
+    std::string time_label = "TIME SEC";
+    std::ostringstream series_json;
+    series_json << '[';
+
+    if (status == SBX_OK && context_) {
+      duration_sec = duration_sec_;
+      const bool is_looping = sbx_context_is_looping(context_.get()) != 0;
+      double sample_span_sec = duration_sec;
+      if (is_looping || sample_span_sec <= 0.0) {
+        sample_span_sec = kBeatPreviewLimitSec;
+        limited = true;
+      }
+
+      if (!std::isfinite(sample_span_sec) || sample_span_sec <= 0.0) {
+        status = SBX_EINVAL;
+        error = "Beat preview currently requires a finite timeline.";
+      } else {
+        duration_sec = sample_span_sec;
+        sample_count = kBeatPreviewSampleCount;
+        const size_t voice_count =
+            std::max(static_cast<size_t>(sbx_context_voice_count(context_.get())),
+                     size_t{1});
+        bool first_series = true;
+
+        for (size_t voice_index = 0U; voice_index < voice_count; ++voice_index) {
+          std::vector<double> t_sec(sample_count, 0.0);
+          std::vector<double> beat_hz(sample_count, 0.0);
+          std::vector<SbxToneSpec> tones(sample_count);
+
+          int rc = sbx_context_sample_program_beat_voice(context_.get(),
+                                                         voice_index,
+                                                         0.0,
+                                                         sample_span_sec,
+                                                         sample_count,
+                                                         t_sec.data(),
+                                                         beat_hz.data());
+          if (rc != SBX_OK) {
+            status = rc;
+            error = context_error_locked();
+            if (error.empty()) {
+              error = "Failed to sample beat preview from sbagenxlib.";
+            }
+            break;
+          }
+
+          rc = sbx_context_sample_tones_voice(context_.get(),
+                                              voice_index,
+                                              0.0,
+                                              sample_span_sec,
+                                              sample_count,
+                                              nullptr,
+                                              tones.data());
+          if (rc != SBX_OK) {
+            status = rc;
+            error = context_error_locked();
+            if (error.empty()) {
+              error = "Failed to sample tone activity from sbagenxlib.";
+            }
+            break;
+          }
+
+          size_t active_sample_count = 0U;
+          std::ostringstream points_json;
+          points_json << '[';
+          for (size_t index = 0U; index < sample_count; ++index) {
+            if (index > 0U) {
+              points_json << ',';
+            }
+            points_json << '{'
+                        << "\"tSec\":" << t_sec[index] << ','
+                        << "\"beatHz\":";
+
+            if (!tone_mode_has_beat_preview(tones[index].mode) ||
+                !std::isfinite(beat_hz[index])) {
+              points_json << "null";
+            } else {
+              ++active_sample_count;
+              min_hz = std::min(min_hz, beat_hz[index]);
+              max_hz = std::max(max_hz, beat_hz[index]);
+              points_json << beat_hz[index];
+            }
+            points_json << '}';
+          }
+          points_json << ']';
+
+          if (active_sample_count == 0U) {
+            continue;
+          }
+
+          if (!first_series) {
+            series_json << ',';
+          }
+          first_series = false;
+          ++plotted_voice_count;
+          series_json << '{'
+                      << "\"voiceIndex\":" << voice_index << ','
+                      << "\"label\":\"Voice " << plotted_voice_count << "\","
+                      << "\"activeSampleCount\":" << active_sample_count << ','
+                      << "\"points\":" << points_json.str()
+                      << '}';
+        }
+
+        if (status == SBX_OK) {
+          time_label = sample_span_sec >= 180.0 ? "TIME MIN" : "TIME SEC";
+        }
+      }
+    }
+
+    series_json << ']';
+    if (status != SBX_OK) {
+      duration_sec = 0.0;
+      sample_count = 0U;
+      plotted_voice_count = 0U;
+      min_hz = std::numeric_limits<double>::infinity();
+      max_hz = -std::numeric_limits<double>::infinity();
+      limited = false;
+      time_label = "TIME SEC";
+      series_json.str("");
+      series_json.clear();
+      series_json << "[]";
+    }
+
+    last_status_ = status;
+    last_error_text_ = error;
+
+    std::ostringstream json;
+    json << '{'
+         << "\"status\":" << status << ','
+         << "\"statusText\":\"" << escape_json(status_text(status)) << "\","
+         << "\"durationSec\":" << duration_sec << ','
+         << "\"sampleCount\":" << sample_count << ','
+         << "\"voiceCount\":" << plotted_voice_count << ','
+         << "\"minHz\":";
+    if (min_hz == std::numeric_limits<double>::infinity()) {
+      json << "null";
+    } else {
+      json << min_hz;
+    }
+    json << ",\"maxHz\":";
+    if (max_hz == -std::numeric_limits<double>::infinity()) {
+      json << "null";
+    } else {
+      json << max_hz;
+    }
+    json << ",\"limited\":" << (limited ? "true" : "false") << ','
+         << "\"timeLabel\":\"" << escape_json(time_label) << "\","
+         << "\"series\":" << series_json.str() << ','
+         << "\"error\":\"" << escape_json(error) << "\","
+         << "\"bridgeVersion\":\"" << escape_json(kBridgeVersion) << "\","
+         << "\"engineVersion\":\"" << escape_json(sbx_version()) << "\""
+         << '}';
+    return json.str();
+  }
+
   std::string context_error_locked() const {
     if (mix_native_input_ && mix_input_) {
       const char *mix_error = sbx_mix_input_last_error(mix_input_.get());
@@ -2332,6 +2526,8 @@ class BridgeRuntimeState {
     mix_active_ = false;
     mix_looping_ = false;
     mix_native_input_ = false;
+    last_status_ = SBX_OK;
+    last_error_text_.clear();
   }
 
   int apply_stored_mix_stream_locked(float *io,
@@ -2456,6 +2652,8 @@ class BridgeRuntimeState {
   bool mix_looping_ = false;
   bool mix_native_input_ = false;
   bool mix_delete_on_release_ = false;
+  int last_status_ = SBX_OK;
+  std::string last_error_text_;
 };
 
 BridgeRuntimeState &runtime_state() {
@@ -2696,6 +2894,19 @@ std::string inspect_sbg_runtime_json(const std::string &text,
                                        error);
 }
 
+std::string sample_sbg_beat_preview_json(const std::string &text,
+                                         const std::string &source_name) {
+  BridgeRuntimeState sampler;
+  sampler.prepare_sbg_context_streaming(text, source_name, "", false);
+  return sampler.sample_beat_preview_json();
+}
+
+std::string sample_program_beat_preview_json(const ProgramRequest &request) {
+  BridgeRuntimeState sampler;
+  sampler.prepare_program_context_streaming(request, "", false);
+  return sampler.sample_beat_preview_json();
+}
+
 bool make_program_request(const std::string &program_kind,
                           const std::string &main_arg,
                           int drop_time_sec,
@@ -2779,6 +2990,56 @@ Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeValidateCurveProgram(
                     validate_curve_program_text(jstring_to_utf8(env, text),
                                                 jstring_to_utf8(env, main_arg),
                                                 jstring_to_utf8(env, source_name)));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeSampleBeatPreview(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring text,
+    jstring source_name) {
+  return to_jstring(env,
+                    sample_sbg_beat_preview_json(jstring_to_utf8(env, text),
+                                                 jstring_to_utf8(env, source_name)));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sbagenxandroid_sbagenx_SbagenxBridge_nativeSampleProgramBeatPreview(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring program_kind,
+    jstring main_arg,
+    jint drop_time_sec,
+    jint hold_time_sec,
+    jint wake_time_sec,
+    jstring curve_text,
+    jstring source_name,
+    jstring mix_path) {
+  ProgramRequest request;
+  std::string error;
+  if (!make_program_request(jstring_to_utf8(env, program_kind),
+                            jstring_to_utf8(env, main_arg),
+                            drop_time_sec,
+                            hold_time_sec,
+                            wake_time_sec,
+                            jstring_to_utf8(env, curve_text),
+                            jstring_to_utf8(env, source_name),
+                            jstring_to_utf8(env, mix_path),
+                            &request,
+                            &error)) {
+    return to_jstring(
+        env,
+        std::string("{\"status\":") + std::to_string(SBX_EINVAL) +
+            ",\"statusText\":\"" + escape_json(status_text(SBX_EINVAL)) +
+            "\",\"durationSec\":0.0,\"sampleCount\":0,\"voiceCount\":0,"
+            "\"minHz\":null,\"maxHz\":null,\"limited\":false,"
+            "\"timeLabel\":\"TIME SEC\",\"series\":[],\"error\":\"" +
+            escape_json(error) + "\",\"bridgeVersion\":\"" +
+            escape_json(kBridgeVersion) + "\",\"engineVersion\":\"" +
+            escape_json(sbx_version()) + "\"}");
+  }
+
+  return to_jstring(env, sample_program_beat_preview_json(request));
 }
 
 extern "C" JNIEXPORT jstring JNICALL

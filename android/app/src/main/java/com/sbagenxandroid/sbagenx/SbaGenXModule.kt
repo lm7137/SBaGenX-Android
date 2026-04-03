@@ -164,6 +164,39 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun sampleBeatPreview(text: String, sourceName: String?, promise: Promise) {
+    resolveNativeCall(promise) {
+      SbagenxBridge.nativeSampleBeatPreview(text, sourceName ?: "scratch.sbg")
+    }
+  }
+
+  @ReactMethod
+  fun sampleProgramBeatPreview(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String?,
+      mixPath: String?,
+      promise: Promise,
+  ) {
+    resolveNativeCall(promise) {
+      SbagenxBridge.nativeSampleProgramBeatPreview(
+          programKind,
+          mainArg,
+          dropTimeSec,
+          holdTimeSec,
+          wakeTimeSec,
+          curveText,
+          sourceName ?: "program:$programKind",
+          mixPath.orEmpty(),
+      )
+    }
+  }
+
+  @ReactMethod
   fun prepareSbgContext(
       text: String,
       sourceName: String?,

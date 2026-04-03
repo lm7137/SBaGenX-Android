@@ -17,6 +17,19 @@ object SbagenxBridge {
       sourceName: String,
   ): String
 
+  external fun nativeSampleBeatPreview(text: String, sourceName: String): String
+
+  external fun nativeSampleProgramBeatPreview(
+      programKind: String,
+      mainArg: String,
+      dropTimeSec: Int,
+      holdTimeSec: Int,
+      wakeTimeSec: Int,
+      curveText: String?,
+      sourceName: String,
+      mixPath: String,
+  ): String
+
   external fun nativeInspectSbgRuntimeConfig(text: String, sourceName: String): String
 
   external fun nativePrepareSbgContext(
