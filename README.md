@@ -2,6 +2,8 @@
 
 Separate Android frontend for `sbagenxlib`, built with React Native and a Kotlin/JNI native bridge.
 
+Upstream project: [SBaGenX](https://github.com/lm7137/SBaGenX).
+
 ## Current milestone
 
 The repo is scaffolded as a plain React Native app and already includes:
@@ -97,7 +99,7 @@ Bundled Android app assets now include:
 
 That means desktop-style examples such as `-SE -m river1.ogg` can resolve inside the Android app without needing an external document picker first.
 
-The parent `SBaGenX` repo now includes [android-build-libs.sh](/home/magiktime/projects/SBaGenX/android-build-libs.sh), which rebuilds the Android `libogg`, Tremor `libvorbisidec`, and `libmad` static archives with the Android NDK and drops them into `SBaGenX/libs/` for vendoring into this repo.
+The parent [SBaGenX](https://github.com/lm7137/SBaGenX) repo now includes [android-build-libs.sh](/home/magiktime/projects/SBaGenX/android-build-libs.sh), which rebuilds the Android `libogg`, Tremor `libvorbisidec`, and `libmad` static archives with the Android NDK and drops them into `SBaGenX/libs/` for vendoring into this repo.
 
 Codec vendoring is documented separately in [android-codecs.md](/home/magiktime/projects/SBaGenX-Android/docs/android-codecs.md). The rule is to build codec archives from a pinned parent `SBaGenX` revision, then vendor snapshot copies into this repo rather than depending on a live sibling checkout.
 
