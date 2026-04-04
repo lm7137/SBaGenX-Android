@@ -4,6 +4,8 @@ Separate Android frontend for `sbagenxlib`, built with React Native and a Kotlin
 
 Upstream project: [SBaGenX](https://github.com/lm7137/SBaGenX).
 
+Release APKs bundle the native Android codec archives needed for `sbx_mix_input_create_stdio(...)`, so OGG, MP3, and FLAC mix playback works without a sibling checkout of the upstream repo.
+
 ## Current milestone
 
 The repo is scaffolded as a plain React Native app and already includes:
@@ -11,22 +13,25 @@ The repo is scaffolded as a plain React Native app and already includes:
 - a vendored `sbagenxlib` snapshot in `native/sbagenxlib/`
 - an Android NDK/CMake build that compiles `libsbagenxbridge.so`
 - a Kotlin React Native module that calls into JNI
-- a first editor workbench screen for `.sbg` and `.sbgf` text
+- a native Android editor workbench for `.sbg` sequence files and `.sbgf` curve files
 - real `sbx_version()`, `sbx_api_version()`, `sbx_validate_sbg_text()`, and `sbx_validate_sbgf_text()` calls
 - `.sbgf` curve metadata inspection during validation, including solve-backed parameter values after native prepare
+- built-in program mode for `drop`, `sigmoid`, `slide`, and `curve`
 - a persistent native `SbxContext` for `.sbg` documents
 - preview rendering of PCM float samples from JNI without audio output
-- live Android playback for `.sbg` via `AudioTrack`
+- live Android playback for sequence files and built-in programs via `AudioTrack`
 - safe `-SE` preamble handling during `.sbg` prepare/playback
 - runtime mix support for `.sbg` `-m` inputs and program-mode mixes resolved from bundled app assets, file paths, or `content://` URIs
 - native stdio-backed mix inputs via `sbx_mix_input_create_stdio(...)` for WAV/raw, FLAC, OGG, and MP3 using bundled Android codec archives
 - `SBAGEN_LOOPER` override state for loaded mixes, with Android keeping mix/looper settings outside the edited `.sbg` text
-- app-local draft save/load inside Android app storage
+- mix metadata inspection that prepopulates `SBAGEN_LOOPER` when present in the selected file
+- live beat preview plotting sampled directly from `sbagenxlib`
+- user-chosen document library storage with Android folder/document pickers and sandbox fallback
 
 What is not implemented yet:
 
-- system document picker / external file open-save flow
-- `.sbgf` beat preview and runtime playback
+- full plot coverage beyond beat preview, such as mix-amplitude or isochronic-cycle inspectors
+- standalone `.sbgf` runtime outside built-in `curve` program mode
 - export workflows
 - iOS native bridge parity
 
@@ -79,18 +84,27 @@ cd android
 - `getBridgeInfo()`
 - `validateSbg(text, sourceName)`
 - `validateSbgf(text, sourceName)`
+- `validateCurveProgram(text, mainArg, sourceName)`
+- `sampleBeatPreview(text, sourceName)`
+- `sampleProgramBeatPreview(programKind, mainArg, dropTimeSec, holdTimeSec, wakeTimeSec, curveText?, sourceName?, mixPath?)`
 - `prepareSbgContext(text, sourceName, mixPathOverride?, mixLooperSpec?)`
+- `prepareProgramContext(programKind, mainArg, dropTimeSec, holdTimeSec, wakeTimeSec, curveText?, sourceName?, mixPath?, mixLooperSpec?)`
 - `getContextState()`
 - `renderPreview(frameCount, sampleValueCount)`
 - `resetContext()`
 - `startPlayback(text, sourceName, mixPathOverride?, mixLooperSpec?)`
+- `startProgramPlayback(programKind, mainArg, dropTimeSec, holdTimeSec, wakeTimeSec, curveText?, sourceName?, mixPath?, mixLooperSpec?)`
 - `stopPlayback()`
 - `getPlaybackState()`
 - `listDocuments()`
+- `getDocumentStoreInfo()`
 - `saveDocument(name, text)`
 - `loadDocument(name)`
+- `pickLibraryFolder()`
+- `pickDocumentToLoad()`
+- `pickMixInput()`
 
-The current editor workbench can validate both `.sbg` and `.sbgf`, inspect prepared `.sbgf` curve parameters from `sbagenxlib`, save drafts locally, prepare a persistent native render context for `.sbg`, preview rendered PCM samples, and start or stop live playback through the Android audio stack. Mix playback now prefers `sbx_mix_input_create_stdio(...)`, using bundled native codec archives for OGG, MP3, and FLAC.
+The current editor workbench can validate both `.sbg` and `.sbgf`, inspect prepared `.sbgf` curve parameters from `sbagenxlib`, run built-in programs, sample live beat previews for sequence and program modes, save documents into a chosen library folder, prepare persistent native render contexts, preview rendered PCM samples, and start or stop live playback through the Android audio stack. Mix playback now prefers `sbx_mix_input_create_stdio(...)`, using bundled native codec archives for OGG, MP3, and FLAC.
 
 Bundled Android app assets now include:
 
