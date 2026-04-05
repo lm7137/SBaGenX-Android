@@ -26,6 +26,7 @@ The repo is scaffolded as a plain React Native app and already includes:
 - `SBAGEN_LOOPER` override state for loaded mixes, with Android keeping mix/looper settings outside the edited `.sbg` text
 - mix metadata inspection that prepopulates `SBAGEN_LOOPER` when present in the selected file
 - live beat preview plotting sampled directly from `sbagenxlib`
+- upstream `noiseNN` spectrum support for `noise` and compatible spin-noise tones
 - user-chosen document library storage with Android folder/document pickers and sandbox fallback
 
 What is not implemented yet:
@@ -120,8 +121,8 @@ Codec vendoring is documented separately in [android-codecs.md](/home/magiktime/
 ## Snapshot provenance
 
 The vendored `sbagenxlib` sources and Android codec archives in this repo are
-currently pinned to parent `SBaGenX` tag `v3.9.0-alpha.7` at commit
-`b1e2ee998c76bb7882100ebf197d29db6d66a54f`.
+currently pinned to parent `SBaGenX` tag `v3.9.0-alpha.9` at commit
+`4fc78572b5a33ae211e344dcc939c35ea184cbd3`.
 
 See [SNAPSHOT.md](/home/magiktime/projects/SBaGenX-Android/native/sbagenxlib/SNAPSHOT.md),
 [android-native-bridge.md](/home/magiktime/projects/SBaGenX-Android/docs/android-native-bridge.md),

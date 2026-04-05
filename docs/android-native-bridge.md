@@ -21,10 +21,11 @@ The current bridge proves the minimum useful path:
 - app/UI-state `SBAGEN_LOOPER` overrides for loaded mixes
 - upstream `customNN` envelope support for `mixpulse`, `mixspin`, and `mixbeat`
 - upstream `spinNN` waveform support for `spin`, `bspin`, and `wspin` tones
+- upstream `noiseNN` spectrum support for `noise` and compatible spin-noise tones
 - app-local draft persistence through the React Native module
 
 The current vendored snapshot is pinned to parent `SBaGenX` tag
-`v3.9.0-alpha.7` (`b1e2ee998c76bb7882100ebf197d29db6d66a54f`).
+`v3.9.0-alpha.9` (`4fc78572b5a33ae211e344dcc939c35ea184cbd3`).
 
 ## Current native surface
 

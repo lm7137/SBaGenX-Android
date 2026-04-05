@@ -1,6 +1,6 @@
 {
   "name": "sbagenx-android",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-alpha.9",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
