@@ -22,10 +22,11 @@ The current bridge proves the minimum useful path:
 - upstream `customNN` envelope support for `mixpulse`, `mixspin`, and `mixbeat`
 - upstream `spinNN` waveform support for `spin`, `bspin`, and `wspin` tones
 - upstream `noiseNN` spectrum support for `noise` and compatible spin-noise tones
+- upstream `noisepulse` and `noisebeat` tone support for noise-driven pulse/beat programs
 - app-local draft persistence through the React Native module
 
 The current vendored snapshot is pinned to parent `SBaGenX` tag
-`v3.9.0-alpha.9` (`4fc78572b5a33ae211e344dcc939c35ea184cbd3`).
+`v3.9.0-alpha.10` (`fafdc4fdb0c581fcd31a06dae30154e7829e0327`).
 
 ## Current native surface
 
