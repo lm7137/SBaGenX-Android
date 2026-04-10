@@ -2,6 +2,7 @@ import { NativeModules, Platform } from 'react-native';
 
 export type DocumentKind = 'sbg' | 'sbgf';
 export type ProgramKind = 'drop' | 'sigmoid' | 'slide' | 'curve';
+export type ThemeMode = 'light' | 'dark';
 
 export type SbaGenXDiagnostic = {
   severity: 'error' | 'warning';
@@ -153,6 +154,8 @@ export type ProgramRuntimeRequest = {
 
 type NativeSbaGenXModule = {
   getBridgeInfo(): Promise<string>;
+  getThemeModePreference(): Promise<ThemeMode | null>;
+  setThemeModePreference(mode: ThemeMode): Promise<ThemeMode>;
   validateSbg(text: string, sourceName?: string): Promise<string>;
   validateSbgf(text: string, sourceName?: string): Promise<string>;
   validateCurveProgram(
@@ -254,6 +257,16 @@ export function inferDocumentKind(name: string): DocumentKind {
 
 export async function getBridgeInfo(): Promise<BridgeInfo> {
   return parseNativeJson<BridgeInfo>(requireNativeModule().getBridgeInfo());
+}
+
+export async function getThemeModePreference(): Promise<ThemeMode | null> {
+  return requireNativeModule().getThemeModePreference();
+}
+
+export async function setThemeModePreference(
+  mode: ThemeMode,
+): Promise<ThemeMode> {
+  return requireNativeModule().setThemeModePreference(mode);
 }
 
 export async function validateDocument(

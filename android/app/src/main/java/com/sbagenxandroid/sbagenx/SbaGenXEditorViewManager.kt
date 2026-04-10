@@ -23,6 +23,11 @@ class SbaGenXEditorViewManager : SimpleViewManager<SbaGenXEditorView>() {
     view.hint = placeholder.orEmpty()
   }
 
+  @ReactProp(name = "darkMode", defaultBoolean = false)
+  fun setDarkMode(view: SbaGenXEditorView, darkMode: Boolean) {
+    view.setDarkMode(darkMode)
+  }
+
   @ReactProp(name = "editable", defaultBoolean = true)
   fun setEditable(view: SbaGenXEditorView, editable: Boolean) {
     view.isEnabled = editable

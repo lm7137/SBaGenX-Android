@@ -18,6 +18,11 @@ class SbaGenXBeatPreviewViewManager : SimpleViewManager<SbaGenXBeatPreviewView>(
     view.setPreview(preview?.toBeatPreviewModel())
   }
 
+  @ReactProp(name = "darkMode", defaultBoolean = false)
+  fun setDarkMode(view: SbaGenXBeatPreviewView, darkMode: Boolean) {
+    view.setDarkMode(darkMode)
+  }
+
   companion object {
     const val REACT_CLASS = "SbaGenXBeatPreviewView"
   }

@@ -1,7 +1,9 @@
 import {
+  createContext,
   type ReactNode,
   useEffect,
   useEffectEvent,
+  useContext,
   useMemo,
   useRef,
   useState,
@@ -15,6 +17,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -27,6 +30,7 @@ import {
   getContextState,
   getDocumentStoreInfo,
   getPlaybackState,
+  getThemeModePreference,
   inferDocumentKind,
   isNativeBridgeAvailable,
   listDocuments,
@@ -37,9 +41,11 @@ import {
   prepareSbgContext,
   renderPreview,
   saveDocument,
+  setThemeModePreference,
   startProgramPlayback,
   startPlayback,
   stopPlayback,
+  type ThemeMode,
   validateCurveProgramDocument,
   type BeatPreviewResult,
   type BridgeInfo,
@@ -62,11 +68,6 @@ const brandIcon = require('../assets/sbagenx-icon.png');
 const heroBlueOrb = require('../assets/hero-blue-orb.png');
 const heroPinkOrb = require('../assets/hero-pink-orb.png');
 const BEAT_PREVIEW_COLORS = ['#3a7cff', '#ff2ea6', '#00a47a', '#7b61ff'];
-
-const SURFACE_SOFT = 'rgba(235, 235, 229, 0.74)';
-const SURFACE_GLASS = 'rgba(232, 232, 226, 0.65)';
-const SURFACE_BORDER = 'rgba(255, 255, 255, 0.10)';
-const SURFACE_BORDER_LIGHT = 'rgba(255, 255, 255, 0.18)';
 
 const DEFAULT_SBG_NAME = 'examples/plus/deep-sleep-aid.sbg';
 const DEFAULT_SBGF_NAME = 'examples/basics/curve-expfit-solve-demo.sbgf';
@@ -136,6 +137,215 @@ type GlassCardProps = {
   style?: StyleProp<ViewStyle>;
 };
 
+type WorkbenchTheme = {
+  mode: ThemeMode;
+  rootBackground: string;
+  backdropBase: string;
+  surfaceSoft: string;
+  surfaceGlass: string;
+  surfaceBorder: string;
+  surfaceBorderLight: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  textSubtle: string;
+  brandBadgeBackground: string;
+  brandBadgeBorder: string;
+  fieldBackground: string;
+  fieldBorder: string;
+  fieldText: string;
+  fieldDisabled: string;
+  fieldPlaceholder: string;
+  ghostButtonBackground: string;
+  ghostButtonBorder: string;
+  ghostButtonText: string;
+  primaryButtonBackground: string;
+  primaryButtonBorder: string;
+  primaryButtonText: string;
+  primaryButtonShadow: string;
+  primaryButtonBloom: string;
+  radioBackground: string;
+  radioBorder: string;
+  radioActiveBackground: string;
+  radioActiveBorder: string;
+  radioIndicatorBorder: string;
+  radioIndicatorDot: string;
+  modalScrim: string;
+  modalSurface: string;
+  modalBorder: string;
+  codeBackground: string;
+  codeBorder: string;
+  codeText: string;
+  errorBackground: string;
+  errorBorder: string;
+  errorText: string;
+  warningBackground: string;
+  warningText: string;
+  statusIdleBackground: string;
+  statusIdleBorder: string;
+  statusIdleText: string;
+  statusActiveBackground: string;
+  statusActiveBorder: string;
+  statusActiveText: string;
+  programOptionActiveBackground: string;
+  programOptionActiveBorder: string;
+  heroBlueOpacity: number;
+  heroPinkOpacity: number;
+  themeToggleBackground: string;
+  themeToggleBorder: string;
+  themeToggleThumbBackground: string;
+  themeToggleThumbBorder: string;
+  themeMoon: string;
+  themeSun: string;
+  diagnosticBorder: string;
+  curveRowBorder: string;
+};
+
+function createWorkbenchTheme(mode: ThemeMode): WorkbenchTheme {
+  if (mode === 'dark') {
+    return {
+      mode,
+      rootBackground: '#0b0f16',
+      backdropBase: '#0b0f16',
+      surfaceSoft: 'rgba(22, 29, 40, 0.29)',
+      surfaceGlass: 'rgba(18, 24, 34, 0.24)',
+      surfaceBorder: 'rgba(255, 255, 255, 0.14)',
+      surfaceBorderLight: 'rgba(255, 255, 255, 0.18)',
+      textPrimary: 'rgba(255, 255, 255, 0.96)',
+      textSecondary: 'rgba(255, 255, 255, 0.88)',
+      textMuted: 'rgba(255, 255, 255, 0.72)',
+      textSubtle: 'rgba(255, 255, 255, 0.58)',
+      brandBadgeBackground: 'rgba(255, 255, 255, 0.10)',
+      brandBadgeBorder: 'rgba(255, 255, 255, 0.16)',
+      fieldBackground: 'rgba(255, 255, 255, 0.09)',
+      fieldBorder: 'rgba(255, 255, 255, 0.16)',
+      fieldText: 'rgba(255, 255, 255, 0.94)',
+      fieldDisabled: 'rgba(255, 255, 255, 0.42)',
+      fieldPlaceholder: 'rgba(255, 255, 255, 0.54)',
+      ghostButtonBackground: 'rgba(255, 255, 255, 0.10)',
+      ghostButtonBorder: 'rgba(255, 255, 255, 0.16)',
+      ghostButtonText: 'rgba(255, 255, 255, 0.92)',
+      primaryButtonBackground: '#3a7cff',
+      primaryButtonBorder: 'rgba(96, 151, 255, 0.30)',
+      primaryButtonText: '#ffffff',
+      primaryButtonShadow: '#3a7cff',
+      primaryButtonBloom: 'rgba(255, 46, 166, 0.56)',
+      radioBackground: 'rgba(255, 255, 255, 0.08)',
+      radioBorder: 'rgba(255, 255, 255, 0.14)',
+      radioActiveBackground: 'rgba(58, 124, 255, 0.18)',
+      radioActiveBorder: 'rgba(96, 151, 255, 0.28)',
+      radioIndicatorBorder: 'rgba(255, 255, 255, 0.28)',
+      radioIndicatorDot: '#7db0ff',
+      modalScrim: 'rgba(0, 0, 0, 0.64)',
+      modalSurface: 'rgba(16, 22, 33, 0.94)',
+      modalBorder: 'rgba(255, 255, 255, 0.12)',
+      codeBackground: 'rgba(6, 10, 16, 0.52)',
+      codeBorder: 'rgba(255, 255, 255, 0.12)',
+      codeText: 'rgba(255, 255, 255, 0.88)',
+      errorBackground: 'rgba(120, 24, 44, 0.28)',
+      errorBorder: 'rgba(255, 156, 173, 0.24)',
+      errorText: 'rgba(255, 205, 214, 0.98)',
+      warningBackground: 'rgba(132, 97, 16, 0.30)',
+      warningText: 'rgba(255, 224, 150, 0.98)',
+      statusIdleBackground: 'rgba(255, 255, 255, 0.08)',
+      statusIdleBorder: 'rgba(255, 255, 255, 0.14)',
+      statusIdleText: 'rgba(255, 255, 255, 0.80)',
+      statusActiveBackground: 'rgba(58, 124, 255, 0.18)',
+      statusActiveBorder: 'rgba(96, 151, 255, 0.28)',
+      statusActiveText: '#a9c9ff',
+      programOptionActiveBackground: 'rgba(58, 124, 255, 0.24)',
+      programOptionActiveBorder: 'rgba(96, 151, 255, 0.30)',
+      heroBlueOpacity: 0.48,
+      heroPinkOpacity: 0.42,
+      themeToggleBackground: 'rgba(255,255,255,0.08)',
+      themeToggleBorder: 'rgba(255,255,255,0.20)',
+      themeToggleThumbBackground:
+        'rgba(255,255,255,0.14)',
+      themeToggleThumbBorder: 'rgba(255,255,255,0.22)',
+      themeMoon: 'rgba(135,191,234,0.96)',
+      themeSun: 'rgba(255,201,74,0.96)',
+      diagnosticBorder: 'rgba(255, 255, 255, 0.12)',
+      curveRowBorder: 'rgba(255, 255, 255, 0.10)',
+    };
+  }
+
+  return {
+    mode,
+    rootBackground: '#f6f6f2',
+    backdropBase: '#f6f6f2',
+    surfaceSoft: 'rgba(235, 235, 229, 0.74)',
+    surfaceGlass: 'rgba(232, 232, 226, 0.65)',
+    surfaceBorder: 'rgba(255, 255, 255, 0.10)',
+    surfaceBorderLight: 'rgba(255, 255, 255, 0.18)',
+    textPrimary: '#141414',
+    textSecondary: 'rgba(20, 20, 20, 0.78)',
+    textMuted: 'rgba(20, 20, 20, 0.68)',
+    textSubtle: 'rgba(20, 20, 20, 0.62)',
+    brandBadgeBackground: 'rgba(255, 255, 255, 0.88)',
+    brandBadgeBorder: 'rgba(20, 20, 20, 0.08)',
+    fieldBackground: 'rgba(255, 255, 255, 0.75)',
+    fieldBorder: 'rgba(0, 0, 0, 0.12)',
+    fieldText: '#141414',
+    fieldDisabled: 'rgba(20, 20, 20, 0.42)',
+    fieldPlaceholder: 'rgba(44, 58, 74, 0.58)',
+    ghostButtonBackground: 'rgba(255, 255, 255, 0.60)',
+    ghostButtonBorder: 'rgba(0, 0, 0, 0.10)',
+    ghostButtonText: '#141414',
+    primaryButtonBackground: '#3a7cff',
+    primaryButtonBorder: 'rgba(58, 124, 255, 0.24)',
+    primaryButtonText: '#ffffff',
+    primaryButtonShadow: '#3a7cff',
+    primaryButtonBloom: 'rgba(255, 46, 166, 0.70)',
+    radioBackground: 'rgba(255, 255, 255, 0.60)',
+    radioBorder: 'rgba(0, 0, 0, 0.10)',
+    radioActiveBackground: 'rgba(58, 124, 255, 0.12)',
+    radioActiveBorder: 'rgba(58, 124, 255, 0.24)',
+    radioIndicatorBorder: 'rgba(20, 20, 20, 0.22)',
+    radioIndicatorDot: '#2b67de',
+    modalScrim: 'rgba(10, 12, 18, 0.48)',
+    modalSurface: 'rgba(238, 238, 232, 0.90)',
+    modalBorder: 'rgba(255, 255, 255, 0.20)',
+    codeBackground: 'rgba(255, 255, 255, 0.72)',
+    codeBorder: 'rgba(0, 0, 0, 0.10)',
+    codeText: 'rgba(20, 20, 20, 0.84)',
+    errorBackground: 'rgba(255, 232, 236, 0.92)',
+    errorBorder: 'rgba(159, 28, 35, 0.14)',
+    errorText: '#9f1c23',
+    warningBackground: 'rgba(255, 216, 115, 0.58)',
+    warningText: '#6f5200',
+    statusIdleBackground: 'rgba(255, 255, 255, 0.62)',
+    statusIdleBorder: 'rgba(20, 20, 20, 0.10)',
+    statusIdleText: 'rgba(20, 20, 20, 0.78)',
+    statusActiveBackground: 'rgba(58, 124, 255, 0.12)',
+    statusActiveBorder: 'rgba(58, 124, 255, 0.18)',
+    statusActiveText: '#2b67de',
+    programOptionActiveBackground: 'rgba(58, 124, 255, 0.20)',
+    programOptionActiveBorder: 'rgba(58, 124, 255, 0.24)',
+    heroBlueOpacity: 0.52,
+    heroPinkOpacity: 0.48,
+    themeToggleBackground: 'rgba(235,244,252,0.92)',
+    themeToggleBorder: 'rgba(20,58,92,0.26)',
+    themeToggleThumbBackground: 'rgba(255,255,255,0.98)',
+    themeToggleThumbBorder: 'rgba(20,58,92,0.20)',
+    themeMoon: 'rgba(135,191,234,0.96)',
+    themeSun: 'rgba(255,201,74,0.96)',
+    diagnosticBorder: 'rgba(255, 255, 255, 0.18)',
+    curveRowBorder: 'rgba(255, 255, 255, 0.12)',
+  };
+}
+
+type WorkbenchStyles = ReturnType<typeof createStyles>;
+
+const WorkbenchStylesContext = createContext<WorkbenchStyles | null>(null);
+
+function useWorkbenchStylesContext(): WorkbenchStyles {
+  const styles = useContext(WorkbenchStylesContext);
+  if (styles == null) {
+    throw new Error('Workbench styles are unavailable.');
+  }
+  return styles;
+}
+
 function formatSpan(diagnostic: SbaGenXDiagnostic): string {
   return `${diagnostic.line}:${diagnostic.column} -> ${diagnostic.endLine}:${diagnostic.endColumn}`;
 }
@@ -166,6 +376,59 @@ function formatBeatPreviewDuration(seconds: number, limited: boolean): string {
   }
 
   return limited ? `${text} cap` : text;
+}
+
+function ActionButton({
+  disabled = false,
+  label,
+  onPress,
+  tone = 'ghost',
+}: ActionButtonProps) {
+  const styles = useWorkbenchStylesContext();
+  const isPrimary = tone === 'primary';
+
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.button,
+        isPrimary ? styles.buttonPrimary : styles.buttonGhost,
+        disabled && styles.buttonDisabled,
+        pressed && !disabled && styles.buttonPressed,
+      ]}
+    >
+      {isPrimary ? (
+        <>
+          <View pointerEvents="none" style={styles.buttonPrimaryFill} />
+          <View pointerEvents="none" style={styles.buttonPrimaryBloom} />
+        </>
+      ) : null}
+      <Text
+        style={[
+          styles.buttonText,
+          isPrimary ? styles.buttonTextPrimary : styles.buttonTextGhost,
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function GlassCard({ children, style }: GlassCardProps) {
+  const styles = useWorkbenchStylesContext();
+  return <View style={[styles.card, styles.cardGlass, style]}>{children}</View>;
+}
+
+function MetricCard({ label, value }: MetricCardProps) {
+  const styles = useWorkbenchStylesContext();
+  return (
+    <GlassCard style={styles.metricCard}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricValue}>{value}</Text>
+    </GlassCard>
+  );
 }
 
 function isPreambleCommentOrBlank(line: string): boolean {
@@ -270,75 +533,11 @@ function parseMinutesField(value: string, fallbackMinutes: number): number {
   return Math.round(parsed * 60);
 }
 
-function ActionButton({
-  disabled = false,
-  label,
-  onPress,
-  tone = 'ghost',
-}: ActionButtonProps) {
-  const isPrimary = tone === 'primary';
-
-  return (
-    <Pressable
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.button,
-        isPrimary ? styles.buttonPrimary : styles.buttonGhost,
-        disabled && styles.buttonDisabled,
-        pressed && !disabled && styles.buttonPressed,
-      ]}
-    >
-      {isPrimary ? (
-        <>
-          <View pointerEvents="none" style={styles.buttonPrimaryFill} />
-          <View pointerEvents="none" style={styles.buttonPrimaryBloom} />
-        </>
-      ) : null}
-      <Text
-        style={[
-          styles.buttonText,
-          isPrimary ? styles.buttonTextPrimary : styles.buttonTextGhost,
-        ]}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-function GlassCard({ children, style }: GlassCardProps) {
-  return (
-    <View style={[styles.card, styles.cardGlass, style]}>
-      {children}
-    </View>
-  );
-}
-
-function MetricCard({ label, value }: MetricCardProps) {
-  return (
-    <GlassCard style={styles.metricCard}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={styles.metricValue}>{value}</Text>
-    </GlassCard>
-  );
-}
-
-/*
-type HeroChipProps = {
-  label: string;
-};
-
-function HeroChip({ label }: HeroChipProps) {
-  return (
-    <View style={styles.heroChip}>
-      <Text style={styles.heroChipText}>{label}</Text>
-    </View>
-  );
-}
-*/
-
 export function ValidationWorkbench() {
+  const systemColorScheme = useColorScheme();
+  const systemThemeMode: ThemeMode =
+    systemColorScheme === 'dark' ? 'dark' : 'light';
+  const [themeMode, setThemeMode] = useState<ThemeMode>(systemThemeMode);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>('program');
   const [programKind, setProgramKind] = useState<ProgramKind>('drop');
   const [sequenceFileName, setSequenceFileName] = useState(DEFAULT_SBG_NAME);
@@ -398,6 +597,40 @@ export function ValidationWorkbench() {
   const [showDeveloperTools, setShowDeveloperTools] = useState(false);
   const validationRequestIdRef = useRef(0);
   const beatPreviewRequestIdRef = useRef(0);
+  const isDarkMode = themeMode === 'dark';
+  const theme = useMemo(() => createWorkbenchTheme(themeMode), [themeMode]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getThemeModePreference()
+      .then(storedThemeMode => {
+        if (cancelled) {
+          return;
+        }
+
+        if (storedThemeMode === 'dark' || storedThemeMode === 'light') {
+          setThemeMode(storedThemeMode);
+          return;
+        }
+
+        setThemeMode(systemThemeMode);
+        setThemeModePreference(systemThemeMode).catch(() => {});
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setThemeMode(systemThemeMode);
+        setThemeModePreference(systemThemeMode).catch(() => {});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [systemThemeMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1008,9 +1241,10 @@ export function ValidationWorkbench() {
   ]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.root}>
-        <WebsiteBackdrop />
+    <WorkbenchStylesContext.Provider value={styles}>
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.root}>
+          <WebsiteBackdrop darkMode={isDarkMode} />
 
         <ScrollView
           nestedScrollEnabled
@@ -1023,17 +1257,63 @@ export function ValidationWorkbench() {
             <Image source={heroPinkOrb} style={styles.heroAccentPink} />
 
             <View style={styles.heroTopRow}>
-              <View style={styles.brandLockup}>
-                <View style={styles.brandBadge}>
-                  <Image source={brandIcon} style={styles.brandIcon} />
+              <View style={styles.heroHeaderRow}>
+                <View style={styles.brandLockup}>
+                  <View style={styles.brandBadge}>
+                    <Image source={brandIcon} style={styles.brandIcon} />
+                  </View>
+                  <View style={styles.brandCopy}>
+                    <Text style={styles.kicker}>Android Native Editor</Text>
+                    <Text style={styles.heroTitle}>SBaGenX</Text>
+                    <Text style={styles.heroTitleSub}>
+                      Retro-lab energy, modern clarity.
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.brandCopy}>
-                  <Text style={styles.kicker}>Android Native Editor</Text>
-                  <Text style={styles.heroTitle}>SBaGenX</Text>
-                  <Text style={styles.heroTitleSub}>
-                    Retro-lab energy, modern clarity.
-                  </Text>
-                </View>
+                <Pressable
+                  accessibilityHint="Switch between light and dark mode."
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: isDarkMode }}
+                  onPress={() => {
+                    setThemeMode(current => {
+                      const nextThemeMode =
+                        current === 'dark' ? 'light' : 'dark';
+                      setThemeModePreference(nextThemeMode).catch(() => {});
+                      return nextThemeMode;
+                    });
+                  }}
+                  style={({ pressed }) => [
+                    styles.themeToggle,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <View style={styles.themeToggleTrack} />
+                  <View
+                    style={[
+                      styles.themeToggleThumb,
+                      !isDarkMode && styles.themeToggleThumbLight,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.themeToggleIcon,
+                        styles.themeToggleIconMoon,
+                        !isDarkMode && styles.themeToggleIconHidden,
+                      ]}
+                    >
+                      ☾
+                    </Text>
+                    <Text
+                      style={[
+                        styles.themeToggleIcon,
+                        styles.themeToggleIconSun,
+                        isDarkMode && styles.themeToggleIconHidden,
+                      ]}
+                    >
+                      ☀
+                    </Text>
+                  </View>
+                </Pressable>
               </View>
 
               {/*
@@ -1249,6 +1529,7 @@ export function ValidationWorkbench() {
                 <TextInput
                   keyboardType="decimal-pad"
                   onChangeText={setProgramDropMinutes}
+                  placeholderTextColor={theme.fieldPlaceholder}
                   style={styles.input}
                   value={programDropMinutes}
                 />
@@ -1260,6 +1541,7 @@ export function ValidationWorkbench() {
                   editable={programKind !== 'slide'}
                   keyboardType="decimal-pad"
                   onChangeText={setProgramHoldMinutes}
+                  placeholderTextColor={theme.fieldPlaceholder}
                   style={[
                     styles.input,
                     programKind === 'slide' && styles.inputDisabled,
@@ -1274,6 +1556,7 @@ export function ValidationWorkbench() {
                   editable={programKind !== 'slide'}
                   keyboardType="decimal-pad"
                   onChangeText={setProgramWakeMinutes}
+                  placeholderTextColor={theme.fieldPlaceholder}
                   style={[
                     styles.input,
                     programKind === 'slide' && styles.inputDisabled,
@@ -1295,6 +1578,7 @@ export function ValidationWorkbench() {
                   setBridgeError(null);
                   setValidationState('Program settings updated.');
                 }}
+                placeholderTextColor={theme.fieldPlaceholder}
                 style={styles.input}
                 value={currentProgramMainArg}
               />
@@ -1339,6 +1623,7 @@ export function ValidationWorkbench() {
                     autoCorrect={false}
                     onChangeText={setProgramMixLooperSpec}
                     placeholder="i s928 f5 c1 w1 d218-1146"
+                    placeholderTextColor={theme.fieldPlaceholder}
                     style={styles.input}
                     value={programMixLooperSpec}
                   />
@@ -1380,6 +1665,7 @@ export function ValidationWorkbench() {
                     setCurveFileName(value);
                   }
                 }}
+                placeholderTextColor={theme.fieldPlaceholder}
                 style={styles.input}
                 value={
                   activeDocumentKind === 'sbg' ? sequenceFileName : curveFileName
@@ -1449,6 +1735,7 @@ export function ValidationWorkbench() {
                     autoCorrect={false}
                     onChangeText={setSequenceMixLooperSpec}
                     placeholder="i s928 f5 c1 w1 d218-1146"
+                    placeholderTextColor={theme.fieldPlaceholder}
                     style={styles.input}
                     value={sequenceMixLooperSpec}
                   />
@@ -1462,6 +1749,7 @@ export function ValidationWorkbench() {
               ) : null}
 
               <SbaGenXEditor
+                darkMode={isDarkMode}
                 diagnostics={diagnostics}
                 onTextChange={event => {
                   handleEditorTextChange(event.nativeEvent.text);
@@ -1674,6 +1962,7 @@ export function ValidationWorkbench() {
 
                 <GlassCard style={styles.beatPreviewChartCard}>
                   <SbaGenXBeatPreview
+                    darkMode={isDarkMode}
                     preview={beatPreview}
                     style={styles.beatPreviewChart}
                   />
@@ -1950,778 +2239,842 @@ export function ValidationWorkbench() {
               </View>
             </View>
           </View>
-        </Modal>
-      </View>
-    </SafeAreaView>
+          </Modal>
+        </View>
+      </SafeAreaView>
+    </WorkbenchStylesContext.Provider>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#f6f6f2',
-  },
-  root: {
-    flex: 1,
-    backgroundColor: '#f6f6f2',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  content: {
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 32,
-    gap: 14,
-  },
-  card: {
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: SURFACE_BORDER,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.025,
-    shadowRadius: 12,
-    elevation: 1,
-  },
-  cardSoft: {
-    backgroundColor: SURFACE_SOFT,
-  },
-  cardGlass: {
-    backgroundColor: SURFACE_GLASS,
-    borderColor: SURFACE_BORDER_LIGHT,
-    borderWidth: 0,
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
-  },
-  heroCard: {
-    overflow: 'hidden',
-    paddingHorizontal: 20,
-    paddingVertical: 22,
-  },
-  heroAccentBlue: {
-    position: 'absolute',
-    top: -72,
-    left: -88,
-    width: 268,
-    height: 268,
-    opacity: 0.52,
-    resizeMode: 'stretch',
-  },
-  heroAccentPink: {
-    position: 'absolute',
-    right: -86,
-    top: -84,
-    width: 260,
-    height: 260,
-    opacity: 0.48,
-    resizeMode: 'stretch',
-  },
-  heroTopRow: {
-    gap: 14,
-    marginBottom: 14,
-  },
-  brandLockup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-  },
-  brandBadge: {
-    width: 60,
-    height: 60,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.88)',
-    borderWidth: 1,
-    borderColor: 'rgba(20, 20, 20, 0.08)',
-  },
-  brandIcon: {
-    width: 40,
-    height: 40,
-    resizeMode: 'contain',
-  },
-  brandCopy: {
-    flex: 1,
-  },
-  kicker: {
-    color: 'rgba(20, 20, 20, 0.72)',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-    marginBottom: 6,
-    textTransform: 'uppercase',
-  },
-  heroTitle: {
-    color: '#141414',
-    fontSize: 34,
-    fontWeight: '900',
-    letterSpacing: -1.4,
-    lineHeight: 36,
-  },
-  heroTitleSub: {
-    color: 'rgba(20, 20, 20, 0.62)',
-    fontSize: 17,
-    fontWeight: '700',
-    marginTop: 8,
-  },
-  heroLede: {
-    color: 'rgba(20, 20, 20, 0.78)',
-    fontSize: 15,
-    lineHeight: 23,
-    marginBottom: 16,
-  },
-  heroChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  heroChip: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    backgroundColor: 'rgba(255, 255, 255, 0.55)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.10)',
-  },
-  heroChipText: {
-    color: '#141414',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  lineage: {
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(20, 20, 20, 0.14)',
-    borderStyle: 'dashed',
-    paddingTop: 14,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  lineageLabel: {
-    color: 'rgba(20, 20, 20, 0.72)',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  lineageText: {
-    color: 'rgba(20, 20, 20, 0.72)',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  statusPill: {
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  statusPillIdle: {
-    backgroundColor: 'rgba(255, 255, 255, 0.62)',
-    borderColor: 'rgba(20, 20, 20, 0.10)',
-  },
-  statusPillActive: {
-    backgroundColor: 'rgba(58, 124, 255, 0.12)',
-    borderColor: 'rgba(58, 124, 255, 0.18)',
-  },
-  statusPillText: {
-    fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-  statusPillTextIdle: {
-    color: 'rgba(20, 20, 20, 0.78)',
-  },
-  statusPillTextActive: {
-    color: '#2b67de',
-  },
-  metricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  metricCard: {
-    flexGrow: 1,
-    flexBasis: '47%',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  metricLabel: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.9,
-    marginBottom: 4,
-    textTransform: 'uppercase',
-  },
-  metricValue: {
-    color: '#141414',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  panel: {
-    paddingHorizontal: 16,
-    paddingVertical: 18,
-  },
-  panelKicker: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1.0,
-    marginBottom: 6,
-    textTransform: 'uppercase',
-  },
-  panelTitle: {
-    color: '#141414',
-    fontSize: 24,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-    marginBottom: 6,
-  },
-  panelSub: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 14,
-    lineHeight: 21,
-    marginBottom: 14,
-  },
-  fieldLabel: {
-    color: 'rgba(20, 20, 20, 0.74)',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.9,
-    marginBottom: 6,
-    textTransform: 'uppercase',
-  },
-  input: {
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderColor: 'rgba(0, 0, 0, 0.12)',
-    borderRadius: 12,
-    borderWidth: 1,
-    color: '#141414',
-    marginBottom: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-  },
-  inputDisabled: {
-    color: 'rgba(20, 20, 20, 0.42)',
-    opacity: 0.75,
-  },
-  radioGroup: {
-    gap: 10,
-    marginBottom: 4,
-  },
-  radioCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.10)',
-    backgroundColor: 'rgba(255, 255, 255, 0.60)',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  radioCardActive: {
-    borderColor: 'rgba(58, 124, 255, 0.24)',
-    backgroundColor: 'rgba(58, 124, 255, 0.12)',
-  },
-  radioIndicator: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: 'rgba(20, 20, 20, 0.22)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 1,
-  },
-  radioIndicatorDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'transparent',
-  },
-  radioIndicatorDotActive: {
-    backgroundColor: '#2b67de',
-  },
-  radioCopy: {
-    flex: 1,
-  },
-  radioLabel: {
-    color: '#141414',
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 3,
-  },
-  radioSub: {
-    color: 'rgba(20, 20, 20, 0.66)',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  selectField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.12)',
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    marginBottom: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  selectFieldValue: {
-    color: '#141414',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  selectFieldChevron: {
-    color: 'rgba(20, 20, 20, 0.54)',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.6,
-  },
-  inlineField: {
-    marginBottom: 2,
-  },
-  segmentRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 14,
-  },
-  segmentButton: {
-    flex: 1,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.10)',
-    backgroundColor: 'rgba(255, 255, 255, 0.60)',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  segmentButtonActive: {
-    backgroundColor: 'rgba(58, 124, 255, 0.12)',
-    borderColor: 'rgba(58, 124, 255, 0.22)',
-  },
-  segmentButtonText: {
-    color: 'rgba(20, 20, 20, 0.78)',
-    fontSize: 14,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  segmentButtonTextActive: {
-    color: '#2b67de',
-  },
-  buttonRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 12,
-  },
-  documentActionRow: {
-    justifyContent: 'center',
-  },
-  modalScrim: {
-    flex: 1,
-    backgroundColor: 'rgba(10, 12, 18, 0.48)',
-    justifyContent: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 24,
-  },
-  modalCard: {
-    backgroundColor: 'rgba(238, 238, 232, 0.90)',
-    borderColor: 'rgba(255, 255, 255, 0.20)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.12,
-    shadowRadius: 28,
-    elevation: 10,
-    maxHeight: '82%',
-    paddingHorizontal: 16,
-    paddingVertical: 18,
-  },
-  programPickerList: {
-    marginBottom: 12,
-  },
-  breadcrumbScroll: {
-    marginBottom: 12,
-  },
-  breadcrumbRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  breadcrumbChip: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.10)',
-    backgroundColor: 'rgba(255, 255, 255, 0.60)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  breadcrumbChipActive: {
-    backgroundColor: 'rgba(58, 124, 255, 0.12)',
-    borderColor: 'rgba(58, 124, 255, 0.22)',
-  },
-  breadcrumbText: {
-    color: 'rgba(20, 20, 20, 0.78)',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  breadcrumbTextActive: {
-    color: '#2b67de',
-  },
-  modalEntryList: {
-    marginBottom: 12,
-  },
-  browserEntryCard: {
-    backgroundColor: 'rgba(232, 232, 226, 0.72)',
-    borderColor: 'rgba(255, 255, 255, 0.16)',
-    borderWidth: 0,
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 10,
-  },
-  browserUpCard: {
-    marginBottom: 10,
-  },
-  programOptionActive: {
-    backgroundColor: 'rgba(58, 124, 255, 0.20)',
-    borderColor: 'rgba(58, 124, 255, 0.24)',
-  },
-  browserEntryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    marginBottom: 4,
-  },
-  browserEntryTitle: {
-    color: '#141414',
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  browserEntryBadge: {
-    color: 'rgba(20, 20, 20, 0.64)',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-  },
-  browserEntryMeta: {
-    color: 'rgba(20, 20, 20, 0.66)',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  button: {
-    minWidth: 140,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  buttonGhost: {
-    backgroundColor: 'rgba(255, 255, 255, 0.60)',
-    borderColor: 'rgba(0, 0, 0, 0.10)',
-  },
-  buttonPrimary: {
-    backgroundColor: '#3a7cff',
-    borderColor: 'rgba(58, 124, 255, 0.24)',
-    shadowColor: '#3a7cff',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.18,
-    shadowRadius: 22,
-    elevation: 4,
-  },
-  buttonPrimaryFill: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#3a7cff',
-  },
-  buttonPrimaryBloom: {
-    position: 'absolute',
-    right: -18,
-    top: -24,
-    width: 96,
-    height: 96,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255, 46, 166, 0.70)',
-  },
-  buttonDisabled: {
-    opacity: 0.58,
-  },
-  buttonPressed: {
-    opacity: 0.88,
-  },
-  buttonText: {
-    fontSize: 14,
-    fontWeight: '800',
-    position: 'relative',
-  },
-  buttonTextGhost: {
-    color: '#141414',
-  },
-  buttonTextPrimary: {
-    color: '#ffffff',
-  },
-  note: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 10,
-  },
-  inlineCode: {
-    color: 'rgba(20, 20, 20, 0.84)',
-    fontFamily: 'monospace',
-  },
-  editor: {
-    height: 360,
-    overflow: 'hidden',
-  },
-  statusLine: {
-    color: 'rgba(20, 20, 20, 0.78)',
-    fontSize: 15,
-    lineHeight: 22,
-    marginBottom: 12,
-  },
-  runtimeStatusLine: {
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  inlineError: {
-    color: '#9f1c23',
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  innerGlassCard: {
-    backgroundColor: SURFACE_GLASS,
-    borderColor: SURFACE_BORDER_LIGHT,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  developerCard: {
-    marginTop: 4,
-  },
-  curveInfoCard: {
-    marginBottom: 12,
-  },
-  innerCardTitle: {
-    color: '#141414',
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-  innerCardMeta: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 13,
-    marginBottom: 10,
-  },
-  curveInfoStats: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 12,
-  },
-  beatPreviewStats: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 12,
-  },
-  beatPreviewChartCard: {
-    marginBottom: 12,
-    overflow: 'hidden',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-  },
-  beatPreviewChart: {
-    width: '100%',
-    height: 208,
-  },
-  beatPreviewLegend: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  beatPreviewLegendItem: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  beatPreviewLegendSwatch: {
-    borderRadius: 999,
-    height: 10,
-    width: 10,
-  },
-  beatPreviewLegendText: {
-    color: 'rgba(20, 20, 20, 0.78)',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  curveInfoStat: {
-    backgroundColor: SURFACE_GLASS,
-    borderColor: SURFACE_BORDER_LIGHT,
-    borderRadius: 14,
-    borderWidth: 0,
-    minWidth: 108,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  curveInfoStatLabel: {
-    color: 'rgba(20, 20, 20, 0.66)',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-    marginBottom: 4,
-    textTransform: 'uppercase',
-  },
-  curveInfoStatValue: {
-    color: '#141414',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  curveParamList: {
-    backgroundColor: SURFACE_GLASS,
-    borderColor: SURFACE_BORDER_LIGHT,
-    borderRadius: 16,
-    borderWidth: 0,
-    overflow: 'hidden',
-  },
-  curveParamRow: {
-    backgroundColor: 'transparent',
-    borderBottomColor: 'rgba(255, 255, 255, 0.12)',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  curveParamName: {
-    color: '#141414',
-    fontFamily: 'monospace',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  curveParamValue: {
-    color: 'rgba(20, 20, 20, 0.82)',
-    fontFamily: 'monospace',
-    fontSize: 13,
-  },
-  codeBlock: {
-    backgroundColor: 'rgba(255, 255, 255, 0.72)',
-    borderColor: 'rgba(0, 0, 0, 0.10)',
-    borderRadius: 16,
-    borderWidth: 1,
-    color: 'rgba(20, 20, 20, 0.84)',
-    fontFamily: 'monospace',
-    fontSize: 12,
-    lineHeight: 18,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  errorCard: {
-    backgroundColor: 'rgba(255, 232, 236, 0.92)',
-    borderColor: 'rgba(159, 28, 35, 0.14)',
-    borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  errorTitle: {
-    color: '#9f1c23',
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 6,
-  },
-  errorBody: {
-    color: '#9f1c23',
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  emptyState: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  diagnosticCard: {
-    backgroundColor: SURFACE_GLASS,
-    borderColor: SURFACE_BORDER_LIGHT,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    marginBottom: 10,
-  },
-  diagnosticHeader: {
-    marginBottom: 8,
-  },
-  diagnosticBadge: {
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    overflow: 'hidden',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-    marginBottom: 8,
-  },
-  errorBadge: {
-    backgroundColor: 'rgba(255, 46, 166, 0.12)',
-    color: '#9f1c23',
-  },
-  warningBadge: {
-    backgroundColor: 'rgba(255, 216, 115, 0.58)',
-    color: '#6f5200',
-  },
-  diagnosticCode: {
-    color: '#141414',
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  diagnosticSpan: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontFamily: 'monospace',
-    fontSize: 12,
-  },
-  diagnosticMessage: {
-    color: 'rgba(20, 20, 20, 0.78)',
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  documentCard: {
-    backgroundColor: SURFACE_GLASS,
-    borderColor: SURFACE_BORDER_LIGHT,
-    marginBottom: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  documentCardRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 10,
-    marginBottom: 4,
-  },
-  documentName: {
-    color: '#141414',
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  documentSize: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  documentMeta: {
-    color: 'rgba(20, 20, 20, 0.68)',
-    fontSize: 12,
-  },
-});
+function createStyles(theme: WorkbenchTheme) {
+  return StyleSheet.create({
+    safeArea: {
+      flex: 1,
+      backgroundColor: theme.rootBackground,
+    },
+    root: {
+      flex: 1,
+      backgroundColor: theme.rootBackground,
+    },
+    scrollView: {
+      flex: 1,
+    },
+    content: {
+      paddingHorizontal: 18,
+      paddingTop: 18,
+      paddingBottom: 32,
+      gap: 14,
+    },
+    card: {
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: theme.surfaceBorder,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: theme.mode === 'dark' ? 0.10 : 0.025,
+      shadowRadius: 12,
+      elevation: theme.mode === 'dark' ? 2 : 1,
+    },
+    cardSoft: {
+      backgroundColor: theme.surfaceSoft,
+    },
+    cardGlass: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      borderWidth: 0,
+      shadowOpacity: 0,
+      shadowRadius: 0,
+      elevation: 0,
+    },
+    heroCard: {
+      overflow: 'hidden',
+      paddingHorizontal: 20,
+      paddingVertical: 22,
+    },
+    heroAccentBlue: {
+      position: 'absolute',
+      top: -72,
+      left: -88,
+      width: 268,
+      height: 268,
+      opacity: theme.heroBlueOpacity,
+      resizeMode: 'stretch',
+    },
+    heroAccentPink: {
+      position: 'absolute',
+      right: -86,
+      top: -84,
+      width: 260,
+      height: 260,
+      opacity: theme.heroPinkOpacity,
+      resizeMode: 'stretch',
+    },
+    heroTopRow: {
+      gap: 14,
+      marginBottom: 14,
+    },
+    heroHeaderRow: {
+      alignItems: 'flex-start',
+      flexDirection: 'row',
+      gap: 14,
+      justifyContent: 'space-between',
+    },
+    brandLockup: {
+      alignItems: 'center',
+      flex: 1,
+      flexDirection: 'row',
+      gap: 14,
+    },
+    brandBadge: {
+      width: 60,
+      height: 60,
+      borderRadius: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.brandBadgeBackground,
+      borderWidth: 1,
+      borderColor: theme.brandBadgeBorder,
+    },
+    brandIcon: {
+      width: 40,
+      height: 40,
+      resizeMode: 'contain',
+    },
+    brandCopy: {
+      flex: 1,
+    },
+    kicker: {
+      color: theme.textMuted,
+      fontSize: 12,
+      fontWeight: '800',
+      letterSpacing: 1.2,
+      marginBottom: 6,
+      textTransform: 'uppercase',
+    },
+    heroTitle: {
+      color: theme.textPrimary,
+      fontSize: 34,
+      fontWeight: '900',
+      letterSpacing: -1.4,
+      lineHeight: 36,
+    },
+    heroTitleSub: {
+      color: theme.textSubtle,
+      fontSize: 17,
+      fontWeight: '700',
+      marginTop: 8,
+    },
+    heroLede: {
+      color: theme.textSecondary,
+      fontSize: 15,
+      lineHeight: 23,
+      marginBottom: 16,
+    },
+    heroChips: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+      marginBottom: 16,
+    },
+    heroChip: {
+      borderRadius: 999,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      backgroundColor: theme.ghostButtonBackground,
+      borderWidth: 1,
+      borderColor: theme.ghostButtonBorder,
+    },
+    heroChipText: {
+      color: theme.textPrimary,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    lineage: {
+      borderTopWidth: 1,
+      borderTopColor: theme.surfaceBorderLight,
+      borderStyle: 'dashed',
+      paddingTop: 14,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+    },
+    lineageLabel: {
+      color: theme.textMuted,
+      fontSize: 14,
+      fontWeight: '900',
+    },
+    lineageText: {
+      color: theme.textMuted,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    themeToggle: {
+      position: 'relative',
+      width: 56,
+      height: 32,
+      borderWidth: 1,
+      borderColor: theme.themeToggleBorder,
+      borderRadius: 999,
+      backgroundColor: theme.themeToggleBackground,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: theme.mode === 'dark' ? 0.24 : 0.14,
+      shadowRadius: 16,
+      elevation: 3,
+    },
+    themeToggleTrack: {
+      ...StyleSheet.absoluteFillObject,
+      borderRadius: 999,
+    },
+    themeToggleThumb: {
+      position: 'absolute',
+      top: 2,
+      left: 2,
+      width: 26,
+      height: 26,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.themeToggleThumbBorder,
+      backgroundColor: theme.themeToggleThumbBackground,
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.22,
+      shadowRadius: 10,
+      elevation: 2,
+    },
+    themeToggleThumbLight: {
+      transform: [{ translateX: 24 }],
+    },
+    themeToggleIcon: {
+      position: 'absolute',
+      fontSize: 14,
+      fontWeight: '700',
+    },
+    themeToggleIconHidden: {
+      opacity: 0,
+      transform: [{ scale: 0.8 }],
+    },
+    themeToggleIconMoon: {
+      color: theme.themeMoon,
+    },
+    themeToggleIconSun: {
+      color: theme.themeSun,
+    },
+    statusPill: {
+      alignSelf: 'flex-start',
+      borderRadius: 999,
+      borderWidth: 1,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    statusPillIdle: {
+      backgroundColor: theme.statusIdleBackground,
+      borderColor: theme.statusIdleBorder,
+    },
+    statusPillActive: {
+      backgroundColor: theme.statusActiveBackground,
+      borderColor: theme.statusActiveBorder,
+    },
+    statusPillText: {
+      fontSize: 12,
+      fontWeight: '800',
+      textTransform: 'uppercase',
+      letterSpacing: 0.8,
+    },
+    statusPillTextIdle: {
+      color: theme.statusIdleText,
+    },
+    statusPillTextActive: {
+      color: theme.statusActiveText,
+    },
+    metricsGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 12,
+    },
+    metricCard: {
+      flexGrow: 1,
+      flexBasis: '47%',
+      paddingHorizontal: 14,
+      paddingVertical: 14,
+    },
+    metricLabel: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 0.9,
+      marginBottom: 4,
+      textTransform: 'uppercase',
+    },
+    metricValue: {
+      color: theme.textPrimary,
+      fontSize: 16,
+      fontWeight: '800',
+    },
+    panel: {
+      paddingHorizontal: 16,
+      paddingVertical: 18,
+    },
+    panelKicker: {
+      color: theme.textMuted,
+      fontSize: 12,
+      fontWeight: '800',
+      letterSpacing: 1.0,
+      marginBottom: 6,
+      textTransform: 'uppercase',
+    },
+    panelTitle: {
+      color: theme.textPrimary,
+      fontSize: 24,
+      fontWeight: '900',
+      letterSpacing: -0.5,
+      marginBottom: 6,
+    },
+    panelSub: {
+      color: theme.textMuted,
+      fontSize: 14,
+      lineHeight: 21,
+      marginBottom: 14,
+    },
+    fieldLabel: {
+      color: theme.textSecondary,
+      fontSize: 12,
+      fontWeight: '800',
+      letterSpacing: 0.9,
+      marginBottom: 6,
+      textTransform: 'uppercase',
+    },
+    input: {
+      backgroundColor: theme.fieldBackground,
+      borderColor: theme.fieldBorder,
+      borderRadius: 12,
+      borderWidth: 1,
+      color: theme.fieldText,
+      marginBottom: 14,
+      paddingHorizontal: 12,
+      paddingVertical: 11,
+    },
+    inputDisabled: {
+      color: theme.fieldDisabled,
+      opacity: 0.75,
+    },
+    radioGroup: {
+      gap: 10,
+      marginBottom: 4,
+    },
+    radioCard: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 12,
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: theme.radioBorder,
+      backgroundColor: theme.radioBackground,
+      paddingHorizontal: 14,
+      paddingVertical: 14,
+    },
+    radioCardActive: {
+      borderColor: theme.radioActiveBorder,
+      backgroundColor: theme.radioActiveBackground,
+    },
+    radioIndicator: {
+      width: 20,
+      height: 20,
+      borderRadius: 10,
+      borderWidth: 1.5,
+      borderColor: theme.radioIndicatorBorder,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginTop: 1,
+    },
+    radioIndicatorDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: 'transparent',
+    },
+    radioIndicatorDotActive: {
+      backgroundColor: theme.radioIndicatorDot,
+    },
+    radioCopy: {
+      flex: 1,
+    },
+    radioLabel: {
+      color: theme.textPrimary,
+      fontSize: 15,
+      fontWeight: '800',
+      marginBottom: 3,
+    },
+    radioSub: {
+      color: theme.textMuted,
+      fontSize: 13,
+      lineHeight: 18,
+    },
+    selectField: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.fieldBorder,
+      backgroundColor: theme.fieldBackground,
+      marginBottom: 14,
+      paddingHorizontal: 12,
+      paddingVertical: 12,
+    },
+    selectFieldValue: {
+      color: theme.fieldText,
+      fontSize: 15,
+      fontWeight: '700',
+    },
+    selectFieldChevron: {
+      color: theme.textSubtle,
+      fontSize: 11,
+      fontWeight: '900',
+      letterSpacing: 0.6,
+    },
+    inlineField: {
+      marginBottom: 2,
+    },
+    segmentRow: {
+      flexDirection: 'row',
+      gap: 10,
+      marginBottom: 14,
+    },
+    segmentButton: {
+      flex: 1,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.ghostButtonBorder,
+      backgroundColor: theme.ghostButtonBackground,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+    },
+    segmentButtonActive: {
+      backgroundColor: theme.radioActiveBackground,
+      borderColor: theme.radioActiveBorder,
+    },
+    segmentButtonText: {
+      color: theme.textSecondary,
+      fontSize: 14,
+      fontWeight: '800',
+      textAlign: 'center',
+    },
+    segmentButtonTextActive: {
+      color: theme.statusActiveText,
+    },
+    buttonRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 10,
+      marginBottom: 12,
+    },
+    documentActionRow: {
+      justifyContent: 'center',
+    },
+    modalScrim: {
+      flex: 1,
+      backgroundColor: theme.modalScrim,
+      justifyContent: 'center',
+      paddingHorizontal: 18,
+      paddingVertical: 24,
+    },
+    modalCard: {
+      backgroundColor: theme.modalSurface,
+      borderColor: theme.modalBorder,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 14 },
+      shadowOpacity: theme.mode === 'dark' ? 0.32 : 0.12,
+      shadowRadius: 28,
+      elevation: 10,
+      maxHeight: '82%',
+      paddingHorizontal: 16,
+      paddingVertical: 18,
+    },
+    programPickerList: {
+      marginBottom: 12,
+    },
+    breadcrumbScroll: {
+      marginBottom: 12,
+    },
+    breadcrumbRow: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    breadcrumbChip: {
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.ghostButtonBorder,
+      backgroundColor: theme.ghostButtonBackground,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    breadcrumbChipActive: {
+      backgroundColor: theme.radioActiveBackground,
+      borderColor: theme.radioActiveBorder,
+    },
+    breadcrumbText: {
+      color: theme.textSecondary,
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    breadcrumbTextActive: {
+      color: theme.statusActiveText,
+    },
+    modalEntryList: {
+      marginBottom: 12,
+    },
+    browserEntryCard: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      borderWidth: 0,
+      shadowOpacity: 0,
+      shadowRadius: 0,
+      elevation: 0,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      marginBottom: 10,
+    },
+    browserUpCard: {
+      marginBottom: 10,
+    },
+    programOptionActive: {
+      backgroundColor: theme.programOptionActiveBackground,
+      borderColor: theme.programOptionActiveBorder,
+    },
+    browserEntryHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      marginBottom: 4,
+    },
+    browserEntryTitle: {
+      color: theme.textPrimary,
+      flex: 1,
+      fontSize: 15,
+      fontWeight: '800',
+    },
+    browserEntryBadge: {
+      color: theme.textSubtle,
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 0.6,
+      textTransform: 'uppercase',
+    },
+    browserEntryMeta: {
+      color: theme.textMuted,
+      fontSize: 13,
+      lineHeight: 18,
+    },
+    button: {
+      minWidth: 140,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderRadius: 999,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      overflow: 'hidden',
+      position: 'relative',
+    },
+    buttonGhost: {
+      backgroundColor: theme.ghostButtonBackground,
+      borderColor: theme.ghostButtonBorder,
+    },
+    buttonPrimary: {
+      backgroundColor: theme.primaryButtonBackground,
+      borderColor: theme.primaryButtonBorder,
+      shadowColor: theme.primaryButtonShadow,
+      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: theme.mode === 'dark' ? 0.28 : 0.18,
+      shadowRadius: 22,
+      elevation: 4,
+    },
+    buttonPrimaryFill: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: theme.primaryButtonBackground,
+    },
+    buttonPrimaryBloom: {
+      position: 'absolute',
+      right: -18,
+      top: -24,
+      width: 96,
+      height: 96,
+      borderRadius: 999,
+      backgroundColor: theme.primaryButtonBloom,
+    },
+    buttonDisabled: {
+      opacity: 0.58,
+    },
+    buttonPressed: {
+      opacity: 0.88,
+    },
+    buttonText: {
+      fontSize: 14,
+      fontWeight: '800',
+      position: 'relative',
+    },
+    buttonTextGhost: {
+      color: theme.ghostButtonText,
+    },
+    buttonTextPrimary: {
+      color: theme.primaryButtonText,
+    },
+    note: {
+      color: theme.textMuted,
+      fontSize: 14,
+      lineHeight: 20,
+      marginBottom: 10,
+    },
+    inlineCode: {
+      color: theme.codeText,
+      fontFamily: 'monospace',
+    },
+    editor: {
+      height: 360,
+      overflow: 'hidden',
+    },
+    statusLine: {
+      color: theme.textSecondary,
+      fontSize: 15,
+      lineHeight: 22,
+      marginBottom: 12,
+    },
+    runtimeStatusLine: {
+      marginTop: 12,
+      marginBottom: 4,
+    },
+    inlineError: {
+      color: theme.errorText,
+      fontSize: 14,
+      lineHeight: 20,
+      marginBottom: 12,
+    },
+    innerGlassCard: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      paddingHorizontal: 14,
+      paddingVertical: 14,
+    },
+    developerCard: {
+      marginTop: 4,
+    },
+    curveInfoCard: {
+      marginBottom: 12,
+    },
+    innerCardTitle: {
+      color: theme.textPrimary,
+      fontSize: 16,
+      fontWeight: '800',
+      marginBottom: 6,
+    },
+    innerCardMeta: {
+      color: theme.textMuted,
+      fontSize: 13,
+      marginBottom: 10,
+    },
+    curveInfoStats: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 10,
+      marginBottom: 12,
+    },
+    beatPreviewStats: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 10,
+      marginBottom: 12,
+    },
+    beatPreviewChartCard: {
+      marginBottom: 12,
+      overflow: 'hidden',
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+    },
+    beatPreviewChart: {
+      width: '100%',
+      height: 208,
+    },
+    beatPreviewLegend: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 10,
+    },
+    beatPreviewLegendItem: {
+      alignItems: 'center',
+      flexDirection: 'row',
+      gap: 8,
+    },
+    beatPreviewLegendSwatch: {
+      borderRadius: 999,
+      height: 10,
+      width: 10,
+    },
+    beatPreviewLegendText: {
+      color: theme.textSecondary,
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    curveInfoStat: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      borderRadius: 14,
+      borderWidth: 0,
+      minWidth: 108,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    curveInfoStatLabel: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+      letterSpacing: 0.5,
+      marginBottom: 4,
+      textTransform: 'uppercase',
+    },
+    curveInfoStatValue: {
+      color: theme.textPrimary,
+      fontSize: 14,
+      fontWeight: '800',
+    },
+    curveParamList: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      borderRadius: 16,
+      borderWidth: 0,
+      overflow: 'hidden',
+    },
+    curveParamRow: {
+      backgroundColor: 'transparent',
+      borderBottomColor: theme.curveRowBorder,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    curveParamName: {
+      color: theme.textPrimary,
+      fontFamily: 'monospace',
+      fontSize: 13,
+      fontWeight: '800',
+    },
+    curveParamValue: {
+      color: theme.textSecondary,
+      fontFamily: 'monospace',
+      fontSize: 13,
+    },
+    codeBlock: {
+      backgroundColor: theme.codeBackground,
+      borderColor: theme.codeBorder,
+      borderRadius: 16,
+      borderWidth: 1,
+      color: theme.codeText,
+      fontFamily: 'monospace',
+      fontSize: 12,
+      lineHeight: 18,
+      paddingHorizontal: 12,
+      paddingVertical: 12,
+    },
+    errorCard: {
+      backgroundColor: theme.errorBackground,
+      borderColor: theme.errorBorder,
+      borderRadius: 16,
+      borderWidth: 1,
+      marginBottom: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 14,
+    },
+    errorTitle: {
+      color: theme.errorText,
+      fontSize: 14,
+      fontWeight: '800',
+      marginBottom: 6,
+    },
+    errorBody: {
+      color: theme.errorText,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    emptyState: {
+      color: theme.textMuted,
+      fontSize: 15,
+      lineHeight: 22,
+    },
+    diagnosticCard: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      paddingHorizontal: 14,
+      paddingVertical: 14,
+      marginBottom: 10,
+    },
+    diagnosticHeader: {
+      marginBottom: 8,
+    },
+    diagnosticBadge: {
+      alignSelf: 'flex-start',
+      borderRadius: 999,
+      overflow: 'hidden',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      fontSize: 11,
+      fontWeight: '900',
+      letterSpacing: 0.8,
+      marginBottom: 8,
+    },
+    errorBadge: {
+      backgroundColor: theme.errorBackground,
+      color: theme.errorText,
+    },
+    warningBadge: {
+      backgroundColor: theme.warningBackground,
+      color: theme.warningText,
+    },
+    diagnosticCode: {
+      color: theme.textPrimary,
+      fontSize: 15,
+      fontWeight: '800',
+      marginBottom: 4,
+    },
+    diagnosticSpan: {
+      color: theme.textMuted,
+      fontFamily: 'monospace',
+      fontSize: 12,
+    },
+    diagnosticMessage: {
+      color: theme.textSecondary,
+      fontSize: 15,
+      lineHeight: 22,
+    },
+    documentCard: {
+      backgroundColor: theme.surfaceGlass,
+      borderColor: theme.surfaceBorderLight,
+      marginBottom: 10,
+      paddingHorizontal: 14,
+      paddingVertical: 14,
+    },
+    documentCardRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      gap: 10,
+      marginBottom: 4,
+    },
+    documentName: {
+      color: theme.textPrimary,
+      flex: 1,
+      fontSize: 15,
+      fontWeight: '800',
+    },
+    documentSize: {
+      color: theme.textMuted,
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    documentMeta: {
+      color: theme.textMuted,
+      fontSize: 12,
+    },
+  });
+}

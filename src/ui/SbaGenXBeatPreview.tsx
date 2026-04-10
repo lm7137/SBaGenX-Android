@@ -6,6 +6,7 @@ import {
 import type { BeatPreviewResult } from '../native/sbagenx';
 
 type NativeSbaGenXBeatPreviewProps = {
+  darkMode?: boolean;
   preview?: BeatPreviewResult | null;
   style?: StyleProp<ViewStyle>;
 };

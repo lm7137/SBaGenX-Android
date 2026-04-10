@@ -55,48 +55,40 @@ class SbaGenXBeatPreviewView(context: Context) : View(context) {
 
   private val frameFillPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#14ffffff")
         style = Paint.Style.FILL
       }
   private val frameStrokePaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#38ffffff")
         style = Paint.Style.STROKE
         strokeWidth = dp(1f)
       }
   private val axisPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#9f4f4d44")
         style = Paint.Style.STROKE
         strokeWidth = dp(1.25f)
       }
   private val gridPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#30545249")
         style = Paint.Style.STROKE
         strokeWidth = dp(1f)
       }
   private val labelPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#cc2c2a25")
         textAlign = Paint.Align.RIGHT
         textSize = sp(11f)
       }
   private val labelPaintCenter =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#cc2c2a25")
         textAlign = Paint.Align.CENTER
         textSize = sp(10.5f)
       }
   private val labelPaintEnd =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#cc2c2a25")
         textAlign = Paint.Align.RIGHT
         textSize = sp(11f)
       }
   private val tickPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8a4f4d44")
         style = Paint.Style.STROKE
         strokeWidth = dp(1.1f)
       }
@@ -109,14 +101,25 @@ class SbaGenXBeatPreviewView(context: Context) : View(context) {
       }
 
   private var preview: BeatPreviewModel? = null
+  private var darkMode = false
 
   init {
     minimumHeight = dp(208f).toInt()
     setWillNotDraw(false)
+    applyPalette()
   }
 
   fun setPreview(nextPreview: BeatPreviewModel?) {
     preview = nextPreview
+    invalidate()
+  }
+
+  fun setDarkMode(nextDarkMode: Boolean) {
+    if (darkMode == nextDarkMode) {
+      return
+    }
+    darkMode = nextDarkMode
+    applyPalette()
     invalidate()
   }
 
@@ -421,4 +424,27 @@ class SbaGenXBeatPreviewView(context: Context) : View(context) {
 
   private fun sp(value: Float): Float =
       TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value, resources.displayMetrics)
+
+  private fun applyPalette() {
+    if (darkMode) {
+      frameFillPaint.color = Color.parseColor("#1affffff")
+      frameStrokePaint.color = Color.parseColor("#36ffffff")
+      axisPaint.color = Color.parseColor("#b8dbe8ff")
+      gridPaint.color = Color.parseColor("#2effffff")
+      labelPaint.color = Color.parseColor("#d8f2f6ff")
+      labelPaintCenter.color = Color.parseColor("#d8f2f6ff")
+      labelPaintEnd.color = Color.parseColor("#d8f2f6ff")
+      tickPaint.color = Color.parseColor("#8fdbe8ff")
+      return
+    }
+
+    frameFillPaint.color = Color.parseColor("#14ffffff")
+    frameStrokePaint.color = Color.parseColor("#38ffffff")
+    axisPaint.color = Color.parseColor("#9f4f4d44")
+    gridPaint.color = Color.parseColor("#30545249")
+    labelPaint.color = Color.parseColor("#cc2c2a25")
+    labelPaintCenter.color = Color.parseColor("#cc2c2a25")
+    labelPaintEnd.color = Color.parseColor("#cc2c2a25")
+    tickPaint.color = Color.parseColor("#8a4f4d44")
+  }
 }

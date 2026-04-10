@@ -1,6 +1,7 @@
 package com.sbagenxandroid.sbagenx
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -16,6 +17,8 @@ import org.json.JSONObject
 class SbaGenXModule(reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext) {
 
+  private val preferences =
+      reactContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
   private val localDocumentStore = LocalDocumentStore(reactContext)
   private val nativeMixInputResolver = NativeMixInputResolver(reactContext, localDocumentStore)
   private val decodedMixInputResolver = MixInputResolver(reactContext, localDocumentStore)
@@ -130,6 +133,30 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
   fun getBridgeInfo(promise: Promise) {
     resolveNativeCall(promise) {
       SbagenxBridge.nativeGetBridgeInfo()
+    }
+  }
+
+  @ReactMethod
+  fun getThemeModePreference(promise: Promise) {
+    try {
+      promise.resolve(preferences.getString(KEY_THEME_MODE, null))
+    } catch (error: Throwable) {
+      promise.reject("SBX_THEME_PREF_GET", error.message, error)
+    }
+  }
+
+  @ReactMethod
+  fun setThemeModePreference(mode: String, promise: Promise) {
+    if (mode != "light" && mode != "dark") {
+      promise.reject("SBX_THEME_PREF_SET", "Unsupported theme mode: $mode")
+      return
+    }
+
+    try {
+      preferences.edit().putString(KEY_THEME_MODE, mode).apply()
+      promise.resolve(mode)
+    } catch (error: Throwable) {
+      promise.reject("SBX_THEME_PREF_SET", error.message, error)
     }
   }
 
@@ -545,6 +572,8 @@ class SbaGenXModule(reactContext: ReactApplicationContext) :
 
   companion object {
     const val NAME = "SbaGenXModule"
+    const val PREFERENCES_NAME = "sbagenx_preferences"
+    const val KEY_THEME_MODE = "theme_mode"
     const val REQUEST_PICK_MIX = 40271
     const val REQUEST_PICK_LIBRARY = 40272
     const val REQUEST_PICK_DOCUMENT = 40273

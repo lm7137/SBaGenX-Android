@@ -82,20 +82,18 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
         textSize = sp(12f)
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
       }
+  private val editorChrome =
+      GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(18f)
+      }
 
   private var suppressChangeEvent = false
   private var diagnostics: List<EditorDiagnostic> = emptyList()
+  private var darkMode = false
 
   init {
-    val chrome =
-        GradientDrawable().apply {
-          shape = GradientDrawable.RECTANGLE
-          cornerRadius = dp(18f)
-          setColor(Color.parseColor("#f0efe8"))
-          setStroke(dp(1f).toInt(), Color.parseColor("#cfcfc7"))
-        }
-
-    background = chrome
+    background = editorChrome
     gravity = Gravity.TOP or Gravity.START
     imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
     inputType =
@@ -108,8 +106,6 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
     movementMethod = ScrollingMovementMethod.getInstance()
     setScroller(Scroller(context))
     includeFontPadding = false
-    setTextColor(Color.parseColor("#161616"))
-    setHintTextColor(Color.parseColor("#8c897f"))
     setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
     typeface = Typeface.MONOSPACE
     setLineSpacing(0f, 1.28f)
@@ -145,6 +141,8 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
           }
         },
     )
+
+    applyPalette()
   }
 
   fun setEditorText(value: String) {
@@ -169,6 +167,15 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
   fun setEditorDiagnostics(nextDiagnostics: List<EditorDiagnostic>) {
     diagnostics = nextDiagnostics
     applyDiagnosticSpans()
+    invalidate()
+  }
+
+  fun setDarkMode(nextDarkMode: Boolean) {
+    if (darkMode == nextDarkMode) {
+      return
+    }
+    darkMode = nextDarkMode
+    applyPalette()
     invalidate()
   }
 
@@ -373,4 +380,29 @@ class SbaGenXEditorView(context: Context) : AppCompatEditText(context) {
   private fun dp(value: Float): Float = value * density
 
   private fun sp(value: Float): Float = value * scaledDensity
+
+  private fun applyPalette() {
+    if (darkMode) {
+      editorChrome.setColor(Color.parseColor("#16202bd8"))
+      editorChrome.setStroke(dp(1f).toInt(), Color.parseColor("#2effffff"))
+      gutterPaint.color = Color.parseColor("#1b2430")
+      gutterDividerPaint.color = Color.parseColor("#2effffff")
+      currentLinePaint.color = Color.parseColor("#18dbe8ff")
+      lineNumberPaint.color = Color.parseColor("#7eb4c4d2")
+      activeLineNumberPaint.color = Color.parseColor("#8cbcff")
+      setTextColor(Color.parseColor("#f3f7fb"))
+      setHintTextColor(Color.parseColor("#86b8c6d4"))
+      return
+    }
+
+    editorChrome.setColor(Color.parseColor("#f0efe8"))
+    editorChrome.setStroke(dp(1f).toInt(), Color.parseColor("#cfcfc7"))
+    gutterPaint.color = Color.parseColor("#d8d8cf")
+    gutterDividerPaint.color = Color.parseColor("#c8c8bf")
+    currentLinePaint.color = Color.parseColor("#12c5d7f2")
+    lineNumberPaint.color = Color.parseColor("#777468")
+    activeLineNumberPaint.color = Color.parseColor("#3a7cff")
+    setTextColor(Color.parseColor("#161616"))
+    setHintTextColor(Color.parseColor("#8c897f"))
+  }
 }

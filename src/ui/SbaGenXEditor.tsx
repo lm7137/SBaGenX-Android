@@ -11,6 +11,7 @@ type EditorTextChangeEvent = {
 };
 
 type NativeSbaGenXEditorProps = {
+  darkMode?: boolean;
   diagnostics?: readonly SbaGenXDiagnostic[];
   editable?: boolean;
   onTextChange?: (
