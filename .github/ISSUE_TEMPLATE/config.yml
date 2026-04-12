@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and roadmap discussion
+    url: https://github.com/lm7137/SBaGenX-Android/discussions
+    about: Use Discussions for open-ended questions, roadmap ideas, and alpha feedback.
