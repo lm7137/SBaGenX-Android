@@ -86,7 +86,7 @@ Important project rule:
 
 ## Snapshot provenance
 
-The vendored `sbagenxlib` sources and codec archives in this repo are currently pinned to parent `SBaGenX` tag `v3.9.0-alpha.10` at commit `fafdc4fdb0c581fcd31a06dae30154e7829e0327`.
+The vendored `sbagenxlib` sources and codec archives in this repo are currently pinned to parent `SBaGenX` tag `v3.9.0-alpha.13` at commit `4c388641d0fc599a746a979de327ccc893873358`.
 
 See:
 

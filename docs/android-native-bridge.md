@@ -26,7 +26,7 @@ The current bridge proves the minimum useful path:
 - app-local draft persistence through the React Native module
 
 The current vendored snapshot is pinned to parent `SBaGenX` tag
-`v3.9.0-alpha.10` (`fafdc4fdb0c581fcd31a06dae30154e7829e0327`).
+`v3.9.0-alpha.13` (`4c388641d0fc599a746a979de327ccc893873358`).
 
 ## Current native surface
 

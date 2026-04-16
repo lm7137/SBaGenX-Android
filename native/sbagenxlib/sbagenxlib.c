@@ -1441,6 +1441,72 @@ sbx_wave_sample_unit_phase(int waveform, double phase_unit) {
   return wav;
 }
 
+static double
+sbx_poly_blep(double t, double dt) {
+  if (!(dt > 0.0) || dt >= 1.0)
+    return 0.0;
+  t = sbx_dsp_wrap_unit(t);
+  if (t < dt) {
+    t /= dt;
+    return t + t - t * t - 1.0;
+  }
+  if (t > 1.0 - dt) {
+    t = (t - 1.0) / dt;
+    return t * t + t + t + 1.0;
+  }
+  return 0.0;
+}
+
+static double
+sbx_bandlimited_square_sample(double phase_unit, double dt) {
+  double out = (phase_unit < 0.5) ? 1.0 : -1.0;
+  out += sbx_poly_blep(phase_unit, dt);
+  out -= sbx_poly_blep(sbx_dsp_wrap_unit(phase_unit + 0.5), dt);
+  return out;
+}
+
+static double
+sbx_bandlimited_saw_sample(double phase_unit, double dt) {
+  double out = -1.0 + 2.0 * phase_unit;
+  out -= sbx_poly_blep(phase_unit, dt);
+  return out;
+}
+
+static double
+sbx_oversampled_triangle_sample(double phase_unit, double dt) {
+  int i;
+  double acc = 0.0;
+  const int oversample = 4;
+  for (i = 0; i < oversample; ++i) {
+    double sub_phase = sbx_dsp_wrap_unit(phase_unit + dt * ((double)i + 0.5) / (double)oversample);
+    acc += sbx_wave_sample_unit_phase(SBX_WAVE_TRIANGLE, sub_phase);
+  }
+  return acc / (double)oversample;
+}
+
+static double
+engine_wave_runtime_sample(SbxEngine *eng,
+                           int waveform,
+                           double phase,
+                           double phase_inc) {
+  double phase_unit = sbx_dsp_wrap_cycle(phase, SBX_TAU) / SBX_TAU;
+  double dt = fabs(phase_inc) / SBX_TAU;
+  if (dt > 0.5)
+    dt = 0.5;
+  (void)eng;
+  switch (waveform) {
+    case SBX_WAVE_SQUARE:
+      return sbx_bandlimited_square_sample(phase_unit, dt);
+    case SBX_WAVE_TRIANGLE:
+      return sbx_oversampled_triangle_sample(phase_unit, dt);
+    case SBX_WAVE_SAWTOOTH:
+      return sbx_bandlimited_saw_sample(phase_unit, dt);
+    case SBX_WAVE_SINE:
+    default:
+      return sin(phase);
+  }
+}
+
 static const char *
 skip_ws(const char *p) {
   while (*p && isspace((unsigned char)*p)) p++;
@@ -4057,35 +4123,39 @@ engine_render_sample(SbxEngine *eng, float *out_l, float *out_r) {
   if (eng->tone.mode == SBX_TONE_BINAURAL) {
     double f_l = eng->tone.carrier_hz + eng->tone.beat_hz * 0.5;
     double f_r = eng->tone.carrier_hz - eng->tone.beat_hz * 0.5;
+    double inc_l = SBX_TAU * f_l / sr;
+    double inc_r = SBX_TAU * f_r / sr;
     double env = 1.0;
     int custom_rc = engine_custom_env_sample(eng, eng->tone.envelope_waveform, eng->pulse_phase, &env);
     if (custom_rc == 1) {
-      engine_wave_sample(eng->tone.waveform, eng->phase_l, &left);
-      engine_wave_sample(eng->tone.waveform, eng->phase_r, &right);
+      left = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_l, inc_l);
+      right = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_r, inc_r);
       left *= amp * env;
       right *= amp * env;
       eng->pulse_phase += fabs(eng->tone.beat_hz) / sr;
       while (eng->pulse_phase >= 1.0) eng->pulse_phase -= 1.0;
     } else {
-      engine_wave_sample(eng->tone.waveform, eng->phase_l, &left);
-      engine_wave_sample(eng->tone.waveform, eng->phase_r, &right);
+      left = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_l, inc_l);
+      right = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_r, inc_r);
       left *= amp;
       right *= amp;
     }
-    eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + SBX_TAU * f_l / sr, SBX_TAU);
-    eng->phase_r = sbx_dsp_wrap_cycle(eng->phase_r + SBX_TAU * f_r / sr, SBX_TAU);
+    eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + inc_l, SBX_TAU);
+    eng->phase_r = sbx_dsp_wrap_cycle(eng->phase_r + inc_r, SBX_TAU);
   } else if (eng->tone.mode == SBX_TONE_MONAURAL) {
     double f1 = eng->tone.carrier_hz - eng->tone.beat_hz * 0.5;
     double f2 = eng->tone.carrier_hz + eng->tone.beat_hz * 0.5;
+    double inc1 = SBX_TAU * f1 / sr;
+    double inc2 = SBX_TAU * f2 / sr;
     double s1 = 0.0, s2 = 0.0;
     double mono;
-    engine_wave_sample(eng->tone.waveform, eng->phase_l, &s1);
-    engine_wave_sample(eng->tone.waveform, eng->phase_r, &s2);
+    s1 = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_l, inc1);
+    s2 = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_r, inc2);
     mono = 0.5 * amp * (s1 + s2);
     left = mono;
     right = mono;
-    eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + SBX_TAU * f1 / sr, SBX_TAU);
-    eng->phase_r = sbx_dsp_wrap_cycle(eng->phase_r + SBX_TAU * f2 / sr, SBX_TAU);
+    eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + inc1, SBX_TAU);
+    eng->phase_r = sbx_dsp_wrap_cycle(eng->phase_r + inc2, SBX_TAU);
   } else if (eng->tone.mode == SBX_TONE_ISOCHRONIC ||
              eng->tone.mode == SBX_TONE_NOISE_PULSE) {
     double env = 0.0;
@@ -4094,8 +4164,9 @@ engine_render_sample(SbxEngine *eng, float *out_l, float *out_r) {
     int custom_rc;
 
     if (eng->tone.mode == SBX_TONE_ISOCHRONIC) {
-      engine_wave_sample(eng->tone.waveform, eng->phase_l, &carrier_or_noise);
-      eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + SBX_TAU * eng->tone.carrier_hz / sr, SBX_TAU);
+      double inc = SBX_TAU * eng->tone.carrier_hz / sr;
+      carrier_or_noise = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_l, inc);
+      eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + inc, SBX_TAU);
     } else {
       carrier_or_noise = engine_next_noise_sample_for_tone(eng, &eng->tone, 2);
     }
@@ -4139,9 +4210,10 @@ engine_render_sample(SbxEngine *eng, float *out_l, float *out_r) {
   } else if (eng->tone.mode == SBX_TONE_BELL) {
     double bell_wave = 0.0;
     if (eng->bell_env > 0.0) {
-      engine_wave_sample(eng->tone.waveform, eng->phase_l, &bell_wave);
+      double inc = SBX_TAU * eng->tone.carrier_hz / sr;
+      bell_wave = engine_wave_runtime_sample(eng, eng->tone.waveform, eng->phase_l, inc);
       left = right = bell_wave * eng->bell_env;
-      eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + SBX_TAU * eng->tone.carrier_hz / sr, SBX_TAU);
+      eng->phase_l = sbx_dsp_wrap_cycle(eng->phase_l + inc, SBX_TAU);
 
       eng->bell_tick++;
       if (eng->bell_tick >= eng->bell_tick_period) {
@@ -4745,6 +4817,15 @@ ctx_eval_keyframed_tone_at(const SbxProgramKeyframe *kfs,
   if (u > 1.0) u = 1.0;
   if (k0->interp == SBX_INTERP_STEP)
     u = 0.0;
+  /*
+   * Bells are edge-triggered events in sequence files. They should not fade
+   * into existence during the lead-in segment before their scheduled time.
+   */
+  if (k0->tone.mode == SBX_TONE_BELL || k1->tone.mode == SBX_TONE_BELL) {
+    *out = k0->tone;
+    if (inout_seg) *inout_seg = seg;
+    return;
+  }
   if (styles && styles[i0] != SBX_SEG_STYLE_DIRECT)
     sbx_eval_sbg_transition_tone(&k0->tone, &k1->tone, styles[i0], u, out);
   else if (k0->tone.mode != k1->tone.mode ||
@@ -4902,6 +4983,92 @@ sbx_version(void) {
 int
 sbx_api_version(void) {
   return SBX_API_VERSION;
+}
+
+void
+sbx_fill_abi_layout_info(SbxAbiLayoutInfo *info) {
+  if (!info) return;
+  memset(info, 0, sizeof(*info));
+
+  info->amp_adjust_point_size = sizeof(SbxAmpAdjustPoint);
+  info->amp_adjust_point_adj_offset = offsetof(SbxAmpAdjustPoint, adj);
+  info->amp_adjust_spec_size = sizeof(SbxAmpAdjustSpec);
+  info->amp_adjust_spec_points_offset = offsetof(SbxAmpAdjustSpec, points);
+  info->mix_mod_spec_size = sizeof(SbxMixModSpec);
+  info->mix_mod_spec_end_level_offset = offsetof(SbxMixModSpec, end_level);
+  info->mix_mod_spec_wake_enabled_offset = offsetof(SbxMixModSpec, wake_enabled);
+  info->iso_envelope_spec_size = sizeof(SbxIsoEnvelopeSpec);
+  info->iso_envelope_spec_release_offset = offsetof(SbxIsoEnvelopeSpec, release);
+  info->iso_envelope_spec_edge_mode_offset = offsetof(SbxIsoEnvelopeSpec, edge_mode);
+  info->mix_fx_spec_size = sizeof(SbxMixFxSpec);
+  info->mix_fx_spec_envelope_waveform_offset = offsetof(SbxMixFxSpec, envelope_waveform);
+  info->mix_fx_spec_amp_offset = offsetof(SbxMixFxSpec, amp);
+  info->mix_fx_spec_mixam_mode_offset = offsetof(SbxMixFxSpec, mixam_mode);
+  info->mix_fx_spec_mixam_floor_offset = offsetof(SbxMixFxSpec, mixam_floor);
+  info->mix_fx_spec_mixam_bind_program_beat_offset = offsetof(SbxMixFxSpec, mixam_bind_program_beat);
+  info->mix_amp_keyframe_size = sizeof(SbxMixAmpKeyframe);
+  info->mix_amp_keyframe_interp_offset = offsetof(SbxMixAmpKeyframe, interp);
+  info->engine_config_size = sizeof(SbxEngineConfig);
+  info->engine_config_channels_offset = offsetof(SbxEngineConfig, channels);
+  info->pcm_convert_state_size = sizeof(SbxPcmConvertState);
+  info->pcm_convert_state_dither_mode_offset = offsetof(SbxPcmConvertState, dither_mode);
+  info->audio_writer_config_size = sizeof(SbxAudioWriterConfig);
+  info->audio_writer_config_format_offset = offsetof(SbxAudioWriterConfig, format);
+  info->audio_writer_config_mp3_vbr_quality_offset = offsetof(SbxAudioWriterConfig, mp3_vbr_quality);
+  info->audio_writer_config_prefer_float_input_offset = offsetof(SbxAudioWriterConfig, prefer_float_input);
+  info->tone_spec_size = sizeof(SbxToneSpec);
+  info->tone_spec_amplitude_offset = offsetof(SbxToneSpec, amplitude);
+  info->tone_spec_waveform_offset = offsetof(SbxToneSpec, waveform);
+  info->tone_spec_noise_waveform_offset = offsetof(SbxToneSpec, noise_waveform);
+  info->tone_spec_iso_release_offset = offsetof(SbxToneSpec, iso_release);
+  info->tone_spec_iso_edge_mode_offset = offsetof(SbxToneSpec, iso_edge_mode);
+  info->program_keyframe_size = sizeof(SbxProgramKeyframe);
+  info->program_keyframe_tone_offset = offsetof(SbxProgramKeyframe, tone);
+  info->program_keyframe_interp_offset = offsetof(SbxProgramKeyframe, interp);
+  info->mix_input_config_size = sizeof(SbxMixInputConfig);
+  info->mix_input_config_looper_spec_override_offset = offsetof(SbxMixInputConfig, looper_spec_override);
+  info->mix_input_config_warn_user_offset = offsetof(SbxMixInputConfig, warn_user);
+  info->safe_seqfile_preamble_size = sizeof(SbxSafeSeqfilePreamble);
+  info->safe_seqfile_preamble_amp_adjust_offset = offsetof(SbxSafeSeqfilePreamble, amp_adjust);
+  info->safe_seqfile_preamble_mix_mod_offset = offsetof(SbxSafeSeqfilePreamble, mix_mod);
+  info->safe_seqfile_preamble_iso_env_offset = offsetof(SbxSafeSeqfilePreamble, iso_env);
+  info->safe_seqfile_preamble_mixam_env_offset = offsetof(SbxSafeSeqfilePreamble, mixam_env);
+  info->safe_seqfile_preamble_have_K_offset = offsetof(SbxSafeSeqfilePreamble, have_K);
+  info->safe_seqfile_preamble_mix_path_offset = offsetof(SbxSafeSeqfilePreamble, mix_path);
+  info->safe_seqfile_preamble_out_path_offset = offsetof(SbxSafeSeqfilePreamble, out_path);
+  info->diagnostic_size = sizeof(SbxDiagnostic);
+  info->diagnostic_message_offset = offsetof(SbxDiagnostic, message);
+  info->curve_info_size = sizeof(SbxCurveInfo);
+  info->curve_info_mixamp_piece_count_offset = offsetof(SbxCurveInfo, mixamp_piece_count);
+  info->curve_eval_config_size = sizeof(SbxCurveEvalConfig);
+  info->curve_eval_config_wake_min_offset = offsetof(SbxCurveEvalConfig, wake_min);
+  info->curve_eval_config_mix_amp0_pct_offset = offsetof(SbxCurveEvalConfig, mix_amp0_pct);
+  info->curve_source_config_size = sizeof(SbxCurveSourceConfig);
+  info->curve_source_config_iso_release_offset = offsetof(SbxCurveSourceConfig, iso_release);
+  info->curve_source_config_duration_sec_offset = offsetof(SbxCurveSourceConfig, duration_sec);
+  info->curve_source_config_loop_offset = offsetof(SbxCurveSourceConfig, loop);
+  info->builtin_drop_config_size = sizeof(SbxBuiltinDropConfig);
+  info->builtin_drop_config_beat_target_hz_offset = offsetof(SbxBuiltinDropConfig, beat_target_hz);
+  info->builtin_drop_config_wake_sec_offset = offsetof(SbxBuiltinDropConfig, wake_sec);
+  info->builtin_drop_config_fade_sec_offset = offsetof(SbxBuiltinDropConfig, fade_sec);
+  info->builtin_sigmoid_config_size = sizeof(SbxBuiltinSigmoidConfig);
+  info->builtin_sigmoid_config_beat_target_hz_offset = offsetof(SbxBuiltinSigmoidConfig, beat_target_hz);
+  info->builtin_sigmoid_config_wake_sec_offset = offsetof(SbxBuiltinSigmoidConfig, wake_sec);
+  info->builtin_sigmoid_config_sig_h_offset = offsetof(SbxBuiltinSigmoidConfig, sig_h);
+  info->builtin_slide_config_size = sizeof(SbxBuiltinSlideConfig);
+  info->builtin_slide_config_carrier_end_hz_offset = offsetof(SbxBuiltinSlideConfig, carrier_end_hz);
+  info->builtin_slide_config_fade_sec_offset = offsetof(SbxBuiltinSlideConfig, fade_sec);
+  info->curve_timeline_config_size = sizeof(SbxCurveTimelineConfig);
+  info->curve_timeline_config_wake_sec_offset = offsetof(SbxCurveTimelineConfig, wake_sec);
+  info->curve_timeline_config_mute_program_tone_offset = offsetof(SbxCurveTimelineConfig, mute_program_tone);
+  info->curve_timeline_config_fade_sec_offset = offsetof(SbxCurveTimelineConfig, fade_sec);
+  info->curve_timeline_size = sizeof(SbxCurveTimeline);
+  info->curve_timeline_mix_frames_offset = offsetof(SbxCurveTimeline, mix_frames);
+  info->curve_timeline_mix_frame_count_offset = offsetof(SbxCurveTimeline, mix_frame_count);
+  info->runtime_context_config_size = sizeof(SbxRuntimeContextConfig);
+  info->runtime_context_config_default_mix_amp_pct_offset = offsetof(SbxRuntimeContextConfig, default_mix_amp_pct);
+  info->runtime_context_config_aux_tones_offset = offsetof(SbxRuntimeContextConfig, aux_tones);
+  info->runtime_context_config_amp_adjust_offset = offsetof(SbxRuntimeContextConfig, amp_adjust);
 }
 
 const char *
